@@ -9,5 +9,6 @@ build/
 .env.*
 *.log
 .idea/
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .ipynb_checkpoints/
