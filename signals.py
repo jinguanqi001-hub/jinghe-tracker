@@ -42,9 +42,10 @@ def evaluate(klines, indicators, realtime=None):
                 _sig("INFO", "价位", "收盘价接近关键位 {} ({:.2f}元)".format(name, price), "观察该位置攻防")
             )
         elif close < price and name in ("platform_support", "breakout_base", "limit_up_support"):
-            if close < price * 0.99:
+            # 跌破支撑需阴线确认，避免放量反弹日误报
+            if close < price * 0.99 and cm["is_bearish"]:
                 signals.append(
-                    _sig("SELL", "支撑", "跌破 {} 支撑 {:.2f}元 (现 {:.2f})".format(name, price, close), "减仓")
+                    _sig("SELL", "支撑", "阴线跌破 {} 支撑 {:.2f}元 (现 {:.2f})".format(name, price, close), "减仓")
                 )
 
     # ── 67 元三重顶 ──
@@ -59,13 +60,22 @@ def evaluate(klines, indicators, realtime=None):
                 "分批止盈",
             )
         )
-    if indicators["resistance_67_tests"] >= 2:
+    if indicators["resistance_67_tests"] >= 3 and close >= 62.0:
         signals.append(
             _sig(
                 "SELL",
                 "形态",
                 "近10日 {} 次测试67元失败 — 三重顶风险".format(indicators["resistance_67_tests"]),
                 "优先减仓",
+            )
+        )
+    elif indicators["resistance_67_tests"] >= 2 and close < 62.0:
+        signals.append(
+            _sig(
+                "WARN",
+                "形态",
+                "近10日 {} 次测试67元失败 — 关注压力".format(indicators["resistance_67_tests"]),
+                "观察",
             )
         )
 
@@ -172,6 +182,14 @@ def evaluate(klines, indicators, realtime=None):
     if ma5 and ma10 and ma20 and close > ma5 > ma10 > ma20 and rsi_val and 50 <= rsi_val <= 65:
         if not any(s["level"] == "SELL" for s in signals):
             signals.append(_sig("BUY", "趋势", "均线多头排列 + RSI健康", "可持有"))
+
+    if ma10 and prev["close"] < ma10 and close > ma10 and not cm["is_bearish"]:
+        signals.append(_sig("BUY", "形态", "V型反转 — 放量站回MA10", "可加仓"))
+
+    if ma20 and close > ma20 and ma5 > ma10 > ma20:
+        low = latest["low"]
+        if low <= ma20 * 1.015 and close > ma20:
+            signals.append(_sig("BUY", "趋势", "MA20回踩企稳", "趋势中加仓"))
 
     if 24 <= close <= 28:
         signals.append(_sig("BUY", "价位", "回落至24-28元建仓区", "可考虑分批建仓"))

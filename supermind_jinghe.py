@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-晶合688249 SuperMind v7.2 — 量价 + 领先股仅建仓
-- 领先买 ≥3 仅空仓建仓加分 | 卖出仅看晶合 | 仓位变化 <8% 不调仓
+晶合688249 SuperMind v8.0 — 趋势持有 + 误杀修复
+- 破位卖出需阴线确认，避免放量反弹日清仓
+- 上升趋势中放宽卖信号、提高最低仓位
+- V型反转 / 5日动量 / MA20回踩 加速建仓
+- 67三重顶需3次失败且价≥62才触发
 """
 
 SOURCE_CODE = r'''
-# ===== 晶合688249 v7.2: 量价 + 领先股仅建仓 =====
+# ===== 晶合688249 v8.0: 趋势持有 + 误杀修复 =====
 STOCK = '688249.SH'
 
 LEADERS = {
@@ -14,8 +17,8 @@ LEADERS = {
     '688082.SH': 1.0,
 }
 
-REBAL_MIN = 0.08
-LEADER_BUY_MIN = 3
+REBAL_MIN = 0.04
+LEADER_BUY_MIN = 2
 
 R67 = 67.0
 R61 = 61.0
@@ -33,7 +36,7 @@ def init(context):
     context.security = STOCK
     g.r67_fail = 0
     g.last_target = -1.0
-    log.info('晶合 v7.2 领先股仅建仓 init')
+    log.info('晶合 v8.0 趋势持有 init')
 
 
 def _rsi(closes, n=14):
@@ -82,6 +85,7 @@ def _vol_signals(symbol, use_levels):
     ma10 = sum(c[-10:]) / 10
     ma20 = sum(c[-20:]) / 20
     rsi = _rsi(c)
+    uptrend = px > ma20 and ma5 > ma10 > ma20
 
     vma5 = sum(v[-6:-1]) / 5 if len(v) >= 6 else float(v[-1] or 1)
     if vma5 <= 0:
@@ -108,17 +112,18 @@ def _vol_signals(symbol, use_levels):
             buy += 2
             br.append('52放量再突破')
         if px >= R61 * 0.98 and vr >= VOL_STRONG and upper >= 0.35:
-            sell -= 2
+            sell -= 2 if not uptrend else 1
             sr.append('61区放量上影')
         if hi >= R67 * 0.985 and px < R67 * 0.992 and vr >= VOL_BREAK:
-            sell -= 3
+            sell -= 3 if not uptrend else 1
             sr.append('67放量回落')
-        if px < S58 * 0.993 and vr >= VOL_PANIC and max(c[-20:]) >= S58 * 0.95:
+        # 破位需阴线确认，避免放量反弹日误杀
+        if px < S58 * 0.993 and px < op and chg < 0 and vr >= VOL_PANIC and max(c[-20:]) >= S58 * 0.95:
             sell -= 3
-            sr.append('破58放量')
-        if px < S52 * 0.995 and vr >= VOL_PANIC and max(c[-20:]) >= S52 * 0.95:
+            sr.append('破58放量阴')
+        if px < S52 * 0.995 and px < op and chg < 0 and vr >= VOL_PANIC and max(c[-20:]) >= S52 * 0.95:
             sell -= 4
-            sr.append('破52放量')
+            sr.append('破52放量阴')
 
     if px > ma20 and ma5 > ma10 and vr >= VOL_BREAK and px > op and chg > 0:
         buy += 1
@@ -132,23 +137,33 @@ def _vol_signals(symbol, use_levels):
     if px > ma5 > ma10 > ma20 and 1.05 <= vr <= 1.7:
         buy += 1
         br.append('多头温和放量')
+    if uptrend and lo <= ma20 * 1.015 and px > ma20 and px > op:
+        buy += 3
+        br.append('MA20回踩')
+    if prev < ma10 and px > ma10 and px > op and vr >= VOL_BREAK:
+        buy += 4
+        br.append('V型反转')
+    ret5 = (px - c[-6]) / c[-6] if len(c) >= 6 and c[-6] else 0.0
+    if ret5 >= 0.10 and px > ma5 and px > op:
+        buy += 3
+        br.append('5日动量')
 
     if vr >= VOL_CLIMAX and upper >= SHADOW_RATIO:
-        sell -= 3
+        sell -= 3 if not uptrend else 1
         sr.append('放量长上影')
     if vr >= VOL_CLIMAX and px < op:
-        sell -= 3
+        sell -= 3 if not uptrend else 2
         sr.append('放量阴线')
     if vr >= VOL_CLIMAX and abs(chg) < 0.008:
-        sell -= 2
+        sell -= 2 if not uptrend else 1
         sr.append('天量滞涨')
-    if px < ma10 and prev >= ma10 and vr >= VOL_PANIC:
+    if px < ma10 and prev >= ma10 and px < op and vr >= VOL_PANIC:
         sell -= 2
-        sr.append('放量破MA10')
-    if px < ma20 and prev < ma20 and vr >= VOL_PANIC:
+        sr.append('放量破MA10阴')
+    if px < ma20 and prev < ma20 and px < op and vr >= VOL_PANIC:
         sell -= 4
-        sr.append('放量破MA20')
-    if rsi >= 78 and vr >= VOL_STRONG:
+        sr.append('放量破MA20阴')
+    if rsi >= 85 and vr >= VOL_STRONG and not uptrend:
         sell -= 1
         sr.append('RSI高+放量')
 
@@ -159,6 +174,7 @@ def _vol_signals(symbol, use_levels):
         'sr': ';'.join(sr),
         'vr': vr,
         'px': px,
+        'uptrend': uptrend,
     }
 
 
@@ -174,8 +190,8 @@ def _analyze_main(context):
             g.r67_fail += 1
         else:
             g.r67_fail = max(0, g.r67_fail - 1)
-        if g.r67_fail >= 2 and px >= 59.0:
-            sig['sell'] -= 2
+        if g.r67_fail >= 3 and px >= 62.0:
+            sig['sell'] -= 2 if not sig['uptrend'] else 1
             sig['sr'] = (sig['sr'] + ';67三重顶').strip(';')
     return sig
 
@@ -197,28 +213,35 @@ def _analyze_leaders(context):
     return int(round(lb)), int(round(ls)), ';'.join(lbr), ';'.join(lsr)
 
 
-def _merge_target(mb, ms, lb, hold):
-    buy = mb
-    sell = ms
-
-    if sell <= -6:
-        return 0.0, '清仓'
-    if sell <= -4:
-        return 0.25, '重度减仓'
-    if sell <= -2:
-        return 0.55, '轻度减仓'
-    if buy >= 4:
+def _merge_target(mb, ms, lb, hold, uptrend):
+    if mb >= 3 and ms > -4:
+        if uptrend:
+            return 0.98, '趋势强买'
         return 0.95, '强买'
-    if buy >= 3:
-        return 0.90, '强买'
-    if buy >= 2:
-        return 0.75, '买入加仓'
-    if buy >= 1:
-        return 0.85, '偏多持有'
-    if buy + sell <= -1:
-        return 0.60, '偏空降仓'
+
+    if uptrend and ms > -5:
+        if mb >= 1:
+            return 0.98, '趋势强持'
+        if ms <= -1:
+            return 0.88, '趋势减仓'
+        return 0.92, '趋势持有'
+
+    if ms <= -8:
+        return 0.0, '清仓'
+    if ms <= -6:
+        return 0.40, '重度减仓'
+    if ms <= -3:
+        return 0.70, '轻度减仓'
+    if mb >= 4:
+        return 0.98, '强买'
+    if mb >= 2:
+        return 0.85, '买入加仓'
+    if mb >= 1:
+        return 0.80, '偏多持有'
+    if mb + ms <= -2:
+        return 0.55, '偏空降仓'
     if hold <= 0 and mb == 0 and lb >= LEADER_BUY_MIN:
-        return 0.75, '领先指引建仓'
+        return 0.85, '领先指引建仓'
     return None, '观望'
 
 
@@ -236,7 +259,7 @@ def handle_bar(context, bar_dict):
     total = context.portfolio.total_value
     pos_pct = (pos.market_value / total) if (pos and total > 0) else 0.0
 
-    tgt, action = _merge_target(mb, ms, lb, hold)
+    tgt, action = _merge_target(mb, ms, lb, hold, main['uptrend'])
     if tgt is None:
         log.info(
             '{} px={:.2f} vr={:.2f} m={}/{} L={}/{} pos={:.0%} 观望'.format(
