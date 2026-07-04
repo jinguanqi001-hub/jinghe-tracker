@@ -32,7 +32,7 @@ THRESHOLDS = {
     "ma_mid": 10,
     "ma_long": 20,
     "rsi_period": 14,
-    "rsi_overbought": 70,
+    "rsi_overbought": 85,
     "rsi_oversold": 30,
     "volume_climax_turnover": 4.0,      # 换手率% 高潮阈值
     "volume_normal_turnover": 2.5,
