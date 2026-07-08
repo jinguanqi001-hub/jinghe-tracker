@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-晶合688249 SuperMind v9.2 — 75%底仓 + 25%华虹做T (趋势锁满)
+晶合688249 SuperMind v9.3 — 75%底仓 + 25%华虹大波段做T
 - 底仓(75%): v8趋势逻辑，仅在强卖/清仓信号时变动
 - T仓(25%): 以华虹公司(688347)为基准，日内波段加减
 - 日线回测用华虹OHLC近似日内T；实盘建议切换分钟频率
 """
 
 SOURCE_CODE = r'''
-# ===== 晶合688249 v9.2: 75%底仓 + 25%华虹做T (趋势锁满) =====
+# ===== 晶合688249 v9.3: 75%底仓 + 25%华虹大波段做T =====
 STOCK = '688249.SH'
 BENCHMARK = '688347.SH'   # 华虹公司 — T仓基准
 
@@ -21,7 +21,7 @@ LEADERS = {
     '688082.SH': 1.0,
 }
 
-REBAL_MIN = 0.02
+REBAL_MIN = 0.015
 LEADER_BUY_MIN = 2
 
 R67 = 67.0
@@ -42,7 +42,7 @@ def init(context):
     g.last_target = -1.0
     g.core_on = False
     g.t_sleeve = T_MID
-    log.info('晶合 v9.2 75%%底仓+25%%华虹做T (趋势锁满) init')
+    log.info('晶合 v9.3 75%%底仓+25%%华虹大波段做T init')
 
 
 def _rsi(closes, n=14):
@@ -227,15 +227,8 @@ def _analyze_leaders(context):
     return int(round(lb)), int(round(ls)), ';'.join(lbr), ';'.join(lsr)
 
 
-def _is_bull(main_sig, mb):
-    return main_sig['uptrend'] or main_sig['px'] > main_sig['ma10'] or mb >= 1
-
-
-def _hh_t_sleeve(context, main_sig, bull_lock):
-    """华虹基准T仓；趋势锁定时直接满T"""
-    if bull_lock:
-        g.t_sleeve = T_MAX
-        return T_MAX, '趋势锁满', '多头趋势'
+def _hh_t_sleeve(context, main_sig):
+    """v9.3 华虹T: score≥2加满 / score≤-2全出 / 其余持有"""
     hh = _vol_signals(BENCHMARK, False)
     if not hh or not main_sig:
         return g.t_sleeve, 'T持有', '-'
@@ -274,14 +267,12 @@ def _hh_t_sleeve(context, main_sig, bull_lock):
             score -= 1
             notes.append('华虹强晶合弱')
 
-    if score >= 3:
+    if score >= 2:
         tgt, act = T_MAX, 'T加满'
-    elif score >= 1:
-        tgt, act = T_MID, 'T半仓'
-    elif score <= -6:
-        tgt, act = T_MID, 'T下限'
+    elif score <= -2:
+        tgt, act = 0.0, 'T全出'
     else:
-        tgt, act = max(g.t_sleeve, T_MID), 'T持有'
+        tgt, act = g.t_sleeve, 'T持有'
 
     g.t_sleeve = tgt
     return tgt, act, ';'.join(notes) if notes else '-'
@@ -319,19 +310,13 @@ def handle_bar(context, bar_dict):
     pos_pct = (pos.market_value / total) if (pos and total > 0) else 0.0
 
     core_tgt, core_act = _core_target(mb, ms, lb, main)
-    bull = _is_bull(main, mb)
-    t_tgt, t_act, t_note = _hh_t_sleeve(context, main, bull and g.core_on)
+    t_tgt, t_act, t_note = _hh_t_sleeve(context, main)
 
     if core_tgt <= 0:
         tgt = 0.0
         action = core_act
-        g.t_sleeve = T_MID
-    elif bull:
-        t_tgt = T_MAX
-        tgt = 1.0
-        action = '{}+趋势锁满'.format(core_act)
+        g.t_sleeve = T_MAX
     else:
-        t_tgt = max(t_tgt, T_MID)
         tgt = min(core_tgt + t_tgt, 1.0)
         action = '{}+{}'.format(core_act, t_act)
 

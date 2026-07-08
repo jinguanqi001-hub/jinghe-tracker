@@ -69,7 +69,7 @@ def render_t_trading(t_result):
         return ""
     lines = []
     lines.append("")
-    lines.append("【仓位结构 v9】75%底仓 + 25%做T (基准: {})".format(t_result.get("benchmark", "华虹公司")))
+    lines.append("【仓位结构 v9.3】75%底仓 + 25%华虹大波段做T (基准: {})".format(t_result.get("benchmark", "华虹公司")))
     if t_result.get("error"):
         lines.append("  ⚠ 华虹数据: {}".format(t_result["error"]))
         return "\n".join(lines)
@@ -84,8 +84,8 @@ def render_t_trading(t_result):
         t_result.get("t_action", ""),
         t_result.get("total_pct", 0),
     ))
-    if t_result.get("bull_lock"):
-        lines.append("  🔒 趋势锁满 — 75%底仓+25%T = 100%")
+    if t_result.get("score") is not None:
+        lines.append("  华虹T评分: {}  |  {}".format(t_result.get("score"), t_result.get("t_action", "")))
     for s in t_result.get("signals") or []:
         icon = LEVEL_ICON.get(s["level"], "⚪")
         lines.append("  {} {} → {}".format(icon, s["message"], s["action"]))

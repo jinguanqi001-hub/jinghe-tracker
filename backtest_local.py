@@ -203,8 +203,6 @@ def merge_target_v8(mb, ms, params, uptrend):
 
 
 def hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=False):
-    if bull_lock:
-        return T_MAX
     sig = vol_signals(hh_hist, False, BASE_PARAMS)
     if not sig:
         return t_sleeve
@@ -218,7 +216,7 @@ def hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=False):
         sig["ma5"], sig["ma10"], sig["rsi"], sig["intraday"],
         sig["upper"], sig["vr"], hh_chg, jh_chg,
     )
-    t_pct, _ = t_pct_from_score(score, T_MAX, T_MID, prev_t=t_sleeve, bull_lock=False)
+    t_pct, _ = t_pct_from_score(score, T_MAX, T_MID, prev_t=t_sleeve)
     return t_pct
 
 
@@ -249,7 +247,7 @@ BASE_PARAMS = {
     "R67": 67.0, "R61": 61.0, "S58": 58.0, "S52": 52.0,
     "VOL_BREAK": 1.30, "VOL_STRONG": 1.55, "VOL_CLIMAX": 1.90,
     "VOL_PANIC": 1.45, "SHADOW_RATIO": 0.50,
-    "REBAL_MIN": 0.04, "r67_fail_need": 3, "r67_px_min": 62.0, "rsi_sell": 85,
+    "REBAL_MIN": 0.015, "r67_fail_need": 3, "r67_px_min": 62.0, "rsi_sell": 85,
     "ma20_pullback": True, "ma20_pullback_score": 3,
     "recovery_buy": True, "recovery_buy_score": 4,
     "momentum_ret5": 0.12, "momentum_buy_score": 3,
@@ -304,7 +302,7 @@ def backtest_v9(jh, hh, params, start_idx=21):
     cash, shares = 1.0, 0.0
     r67_fail, last_target = 0, -1.0
     core_on, t_sleeve = False, T_MAX
-    rebal_min = params.get("REBAL_MIN", 0.02)
+    rebal_min = params.get("REBAL_MIN", 0.015)
     trades, equity = [], []
 
     for i in range(start_idx, len(jh)):
@@ -321,18 +319,15 @@ def backtest_v9(jh, hh, params, start_idx=21):
         if r67_fail >= 3 and px >= 62:
             ms -= 2 if not sig["uptrend"] else 1
 
-        bull = is_bull_mode(sig, mb)
         core_tgt, core_on = core_target_v9(mb, ms, sig, core_on, fast_entry=(i == start_idx))
-        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=bull and core_on)
+        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve)
         if core_tgt <= 0:
-            tgt = 0.0
-        elif bull:
-            tgt = 1.0
+            tgt, action = 0.0, "空仓"
+        elif i == start_idx:
+            tgt, action = 1.0, "首日满仓"
         else:
-            tgt = min(core_tgt + max(t_sleeve, T_MID), 1.0)
-        if i == start_idx and core_tgt > 0:
-            tgt = 1.0
-        action = "趋势锁满" if bull and core_tgt > 0 else "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
+            tgt = min(core_tgt + t_sleeve, 1.0)
+            action = "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
 
         total = cash + shares * px
         pos_pct = (shares * px / total) if total > 0 else 0.0
@@ -404,7 +399,7 @@ def main():
     print("-" * 48)
     print("{:<16} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
     print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
-    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.2 75%+25%T", r9, mdd9, len(t9)))
+    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 75%+25%T", r9, mdd9, len(t9)))
     print("")
     print("--- v9 末5笔 ---")
     for t in t9[-5:]:
