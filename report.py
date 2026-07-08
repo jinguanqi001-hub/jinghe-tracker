@@ -71,7 +71,7 @@ def render_t_trading(t_result):
     mode = t_result.get("mode", "daily")
     if mode == "intraday":
         lines.append("")
-        lines.append("【日内T v10】75%底仓 + 25%华虹分钟基准 (688347)")
+        lines.append("【日内T v10.1】75%底仓 + 25%华虹分钟基准 (688347)")
         if t_result.get("error"):
             lines.append("  ⚠ {}".format(t_result["error"]))
             return "\n".join(lines)

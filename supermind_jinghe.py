@@ -507,10 +507,13 @@ def _hh_intraday_t(context, bar_idx):
         else:
             tgt, act = t_min, 'T全出'
     elif score <= SELL_CUT:
-        tgt = max(T_MID, t_min)
-        act = 'T半仓减' if g.t_sleeve > t_min else 'T持有'
-        if g.t_sleeve <= t_min:
-            tgt = g.t_sleeve
+        if g.uptrend:
+            tgt, act = g.t_sleeve, 'T持有'
+        else:
+            tgt = max(T_MID, t_min)
+            act = 'T半仓减' if g.t_sleeve > t_min else 'T持有'
+            if g.t_sleeve <= t_min:
+                tgt = g.t_sleeve
     else:
         tgt, act = g.t_sleeve, 'T持有'
 

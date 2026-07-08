@@ -123,7 +123,7 @@ def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=Fa
     evaluation = evaluate(klines, indicators, realtime)
     t_result = None
     if intraday_t and not offline:
-        t_result = evaluate_intraday_t_trading()
+        t_result = evaluate_intraday_t_trading(klines)
     elif t_trading and not offline:
         t_result = evaluate_t_trading(klines, realtime)
 
