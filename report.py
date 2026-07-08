@@ -64,7 +64,66 @@ def render_iwencai(iwencai_result):
     return "\n".join(lines)
 
 
-def render_report(stock_name, realtime, indicators, evaluation, source_label="", compare_result=None, iwencai_result=None):
+def render_t_trading(t_result):
+    if not t_result:
+        return ""
+    lines = []
+    mode = t_result.get("mode", "overnight")
+    if mode == "intraday":
+        lines.append("")
+        lines.append("【日内T v10.1】75%底仓 + 25%华虹分钟基准 (688347)")
+        if t_result.get("error"):
+            lines.append("  ⚠ {}".format(t_result["error"]))
+            return "\n".join(lines)
+        lines.append("  华虹 {}  现价:{}  涨跌:{}%  日内:{}%  VWAP:{}  RSI:{}  tick:{}".format(
+            t_result.get("benchmark_time", ""),
+            fmt_price(t_result.get("benchmark_price")),
+            fmt_price(t_result.get("benchmark_change_pct")),
+            fmt_price(t_result.get("benchmark_intraday_pct")),
+            fmt_price(t_result.get("benchmark_vwap")),
+            fmt_price(t_result.get("benchmark_rsi")),
+            t_result.get("tick_count"),
+        ))
+        lines.append("  晶合现价:{}  日内:{}%".format(
+            fmt_price(t_result.get("jh_price")),
+            fmt_price(t_result.get("jh_intraday_pct")),
+        ))
+    else:
+        title = "隔日T v11" if mode == "overnight" else "仓位结构 v9.3"
+        lines.append("")
+        lines.append("【{}】75%底仓 + 25%华虹做T (基准: {})".format(
+            title, t_result.get("benchmark", "华虹公司")))
+        if t_result.get("error"):
+            lines.append("  ⚠ 华虹数据: {}".format(t_result["error"]))
+            return "\n".join(lines)
+        lines.append("  华虹现价: {}  涨跌: {}%  RSI: {}".format(
+            fmt_price(t_result.get("benchmark_price")),
+            fmt_price(t_result.get("benchmark_change_pct")),
+            fmt_price(t_result.get("benchmark_rsi")),
+        ))
+    lines.append("  底仓: {:.0%} (不动)  |  T仓: {:.0%} ({})  |  合计: {:.0%}".format(
+        t_result.get("core_pct", 0.75),
+        t_result.get("t_pct", 0),
+        t_result.get("t_action", ""),
+        t_result.get("total_pct", 0),
+    ))
+    if t_result.get("min_days"):
+        lines.append("  隔日T冷却: {} 交易日".format(t_result["min_days"]))
+    if t_result.get("score") is not None:
+        lines.append("  华虹T评分: {}  |  {}".format(t_result.get("score"), t_result.get("t_action", "")))
+    sigs = t_result.get("signals") or []
+    if sigs and isinstance(sigs[0], dict):
+        for s in sigs:
+            icon = LEVEL_ICON.get(s["level"], "⚪")
+            lines.append("  {} {} → {}".format(icon, s["message"], s.get("action", "")))
+    else:
+        for n in sigs:
+            icon = "🟢" if any(k in n for k in ("回升", "反弹", "超卖", "转强", "晶合强")) else "🔴"
+            lines.append("  {} {}".format(icon, n))
+    return "\n".join(lines)
+
+
+def render_report(stock_name, realtime, indicators, evaluation, source_label="", compare_result=None, iwencai_result=None, t_result=None):
     latest = indicators["latest"]
     lines = []
     lines.append("=" * 60)
@@ -143,6 +202,9 @@ def render_report(stock_name, realtime, indicators, evaluation, source_label="",
             lines.append("  {} [{}] {} → {}".format(icon, s["category"], s["message"], s["action"]))
     else:
         lines.append("  暂无触发信号")
+
+    if t_result:
+        lines.append(render_t_trading(t_result))
 
     if compare_result:
         lines.append(render_compare(compare_result))

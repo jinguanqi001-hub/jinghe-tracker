@@ -3,6 +3,7 @@
 
 # 同花顺代码: 上海 hs_688249, 深圳 hs_0xxxxx
 THS_CODE = "hs_{}".format("688249")
+THS_BENCHMARK_CODE = "hs_{}".format("688347")
 
 # 公开行情 API（同花顺网页端使用，无需账号）
 THS_PUBLIC = {

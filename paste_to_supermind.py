@@ -91,11 +91,36 @@ def to_clipboard(text):
     p.communicate(text.encode("utf-8"))
 
 
+def load_intraday_cell():
+    return """# Step 2B: 日内T 分钟回测 (v10)
+from supermind_jinghe import INTRADAY_SOURCE_CODE
+
+btest = research_strategy(
+    INTRADAY_SOURCE_CODE,
+    start_date='20250601',
+    end_date='20260703',
+    capital_base=200000,
+    frequency='MINUTE',
+    stock_market='STOCK',
+    benchmark='000688.SH',
+)
+
+pf = btest['analyser']['portfolio']
+trades = btest['analyser']['trades']
+print('=== 日内T 分钟回测 ===')
+display(pf)
+display(trades)
+"""
+
+
 def main():
     cell = sys.argv[1] if len(sys.argv) > 1 else "1"
     if cell in ("all", "3", "combined"):
         content = load_combined()
         label = "合并格(策略+回测)"
+    elif cell in ("intraday", "minute", "t"):
+        content = load_intraday_cell()
+        label = "日内T分钟回测"
     elif cell == "2":
         content = load_cell2()
         label = "第 2 格"
