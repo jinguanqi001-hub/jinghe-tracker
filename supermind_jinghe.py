@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 晶合688249 SuperMind
-- v9.3 SOURCE_CODE: 75%底仓 + 25%华虹大波段做T (日线频率，T为OHLC近似)
-- v10 INTRADAY_SOURCE_CODE: 75%底仓 + 25%华虹日内T (MINUTE频率，分钟级华虹信号)
+- SOURCE_CODE (DAILY): v11 隔日T — 75%底仓 + 25%华虹，min_days=5
+- INTRADAY_SOURCE_CODE (MINUTE): v10.1 日内T — 分钟级华虹信号
 """
 
 SOURCE_CODE = r'''
@@ -13,6 +13,7 @@ BENCHMARK = '688347.SH'   # 华虹公司 — T仓基准
 CORE_PCT = 0.75           # 底仓比例（不动）
 T_MAX = 0.25              # T仓上限
 T_MID = 0.125             # T仓中性
+MIN_T_DAYS = 5            # v11 隔日T: 两次调仓至少间隔5交易日
 
 LEADERS = {
     '688347.SH': 1.2,
@@ -40,8 +41,10 @@ def init(context):
     g.r67_fail = 0
     g.last_target = -1.0
     g.core_on = False
-    g.t_sleeve = T_MID
-    log.info('晶合 v9.3 75%%底仓+25%%华虹大波段做T init')
+    g.t_sleeve = T_MAX
+    g.last_t_day = -999
+    g.bar_count = 0
+    log.info('晶合 v11 75%%底仓+25%%华虹隔日T init')
 
 
 def _rsi(closes, n=14):
@@ -227,7 +230,7 @@ def _analyze_leaders(context):
 
 
 def _hh_t_sleeve(context, main_sig):
-    """v9.3 华虹T: score≥2加满 / score≤-2全出 / 其余持有"""
+    """v11 隔日T: score≥2加满 / score≤-2全出 / min 5日冷却"""
     hh = _vol_signals(BENCHMARK, False)
     if not hh or not main_sig:
         return g.t_sleeve, 'T持有', '-'
@@ -273,8 +276,13 @@ def _hh_t_sleeve(context, main_sig):
     else:
         tgt, act = g.t_sleeve, 'T持有'
 
-    g.t_sleeve = tgt
-    return tgt, act, ';'.join(notes) if notes else '-'
+    if g.bar_count - g.last_t_day < MIN_T_DAYS:
+        return g.t_sleeve, 'T冷却', ';'.join(notes) if notes else '-'
+
+    if tgt != g.t_sleeve:
+        g.t_sleeve = tgt
+        g.last_t_day = g.bar_count
+    return g.t_sleeve, act, ';'.join(notes) if notes else '-'
 
 
 def _core_target(mb, ms, lb, main_sig):
@@ -295,6 +303,7 @@ def _core_target(mb, ms, lb, main_sig):
 
 
 def handle_bar(context, bar_dict):
+    g.bar_count += 1
     main = _analyze_main(context)
     if not main:
         return

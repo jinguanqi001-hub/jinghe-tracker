@@ -20,17 +20,36 @@ BENCHMARK = {
     "secid": "1.688347",
 }
 
-# T仓阈值 (v9.3 大波段: score≥2加满 / score≤-2全出)
-T_THRESHOLDS = {
+# 隔日T (v11) — 华虹基准，T仓可隔夜，日线调仓
+OVERNIGHT_T = {
     "buy_score_full": 2,
-    "buy_score_mid": 1,
     "sell_score_clear": -2,
+    "sell_score_force": -4,
+    "trend_floor": False,
+    "min_days": 5,
+    "rebal_min": 0.015,
+    "confirm_sell": False,
+    "confirm_dampen": 1,
+    "jh_rsi_sell": None,
+    "jh_rsi_dev": 0.15,
+    "jh_rsi_shadow": 0.35,
+    "jh_rsi_penalty": 2,
+    "hh_gap_sell": None,
+    "hh_gap_jh_lag": 0.02,
+    "hh_gap_penalty": 2,
+}
+
+# T仓阈值 (兼容 tracker / score_hh_t_signals)
+T_THRESHOLDS = {
+    "buy_score_full": OVERNIGHT_T["buy_score_full"],
+    "buy_score_mid": 1,
+    "sell_score_clear": OVERNIGHT_T["sell_score_clear"],
     "sell_score_cut": -1,
     "t_min_pct": 0.0,
     "rsi_sell": 85,
     "upper_shadow": 0.50,
     "vr_sell_strong": 1.90,
-    "rebal_min": 0.015,
+    "rebal_min": OVERNIGHT_T["rebal_min"],
 }
 
 # 日内T (分钟级华虹基准) — v10.1 减频+趋势保护

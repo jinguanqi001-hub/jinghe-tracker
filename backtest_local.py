@@ -7,10 +7,11 @@ import copy
 import json
 import os
 
-from config import INTRADAY_T, POSITION
+from config import INTRADAY_T, OVERNIGHT_T, POSITION
 from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
 from intraday_t_logic import score_intraday_hh, t_pct_from_intraday_score
-from t_logic import score_hh_t_signals, t_pct_from_score, core_should_exit, core_should_enter
+from overnight_t_logic import score_overnight_hh, t_pct_overnight
+from t_logic import core_should_exit, core_should_enter, score_hh_t_signals, t_pct_from_score
 
 
 CORE_PCT = POSITION["core_pct"]
@@ -203,7 +204,22 @@ def merge_target_v8(mb, ms, params, uptrend):
     return None, "观望"
 
 
-def hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=False):
+def hh_t_sleeve(hh_hist, jh_hist, t_sleeve, jh_sig=None, last_t_day=0, day_idx=0):
+    """v11 隔日T"""
+    hh_sig = vol_signals(hh_hist, False, BASE_PARAMS)
+    if not hh_sig:
+        return t_sleeve
+    if jh_sig is None:
+        jh_sig = vol_signals(jh_hist, True, BASE_PARAMS)
+    if day_idx - last_t_day < OVERNIGHT_T.get("min_days", 0):
+        return t_sleeve
+    score, _ = score_overnight_hh(hh_sig, hh_hist, jh_hist, jh_sig=jh_sig, jh_rsi_fn=rsi)
+    uptrend = jh_sig.get("uptrend", False) if jh_sig else False
+    t_pct, _ = t_pct_overnight(score, prev_t=t_sleeve, uptrend=uptrend)
+    return t_pct
+
+
+def hh_t_sleeve_legacy(hh_hist, jh_hist, t_sleeve, bull_lock=False):
     sig = vol_signals(hh_hist, False, BASE_PARAMS)
     if not sig:
         return t_sleeve
@@ -299,10 +315,11 @@ def backtest_v8(klines, params, start_idx=21):
     return (final - 1) * 100, trades, max_drawdown(equity)
 
 
-def backtest_v9(jh, hh, params, start_idx=21):
+def backtest_v9(jh, hh, params, start_idx=21, overnight=True):
     cash, shares = 1.0, 0.0
     r67_fail, last_target = 0, -1.0
     core_on, t_sleeve = False, T_MAX
+    last_t_day = -999
     rebal_min = params.get("REBAL_MIN", 0.015)
     trades, equity = [], []
 
@@ -321,7 +338,14 @@ def backtest_v9(jh, hh, params, start_idx=21):
             ms -= 2 if not sig["uptrend"] else 1
 
         core_tgt, core_on = core_target_v9(mb, ms, sig, core_on, fast_entry=(i == start_idx))
-        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve)
+        prev_t = t_sleeve
+        if overnight:
+            new_t = hh_t_sleeve(hh_hist, jh_hist, t_sleeve, jh_sig=sig, last_t_day=last_t_day, day_idx=i)
+            if new_t != t_sleeve:
+                t_sleeve = new_t
+                last_t_day = i
+        else:
+            t_sleeve = hh_t_sleeve_legacy(hh_hist, jh_hist, t_sleeve)
         if core_tgt <= 0:
             tgt, action = 0.0, "空仓"
         elif i == start_idx:
@@ -530,7 +554,8 @@ def main():
 
     v8_params = copy.deepcopy(BASE_PARAMS)
     r8, t8, mdd8 = backtest_v8(jh, v8_params, start)
-    r9, t9, mdd9 = backtest_v9(jh, hh, v8_params, start)
+    r9, t9, mdd9 = backtest_v9(jh, hh, v8_params, start, overnight=True)
+    r93, t93, mdd93 = backtest_v9(jh, hh, v8_params, start, overnight=False)
     r10, t10, mdd10 = backtest_v10(jh, hh, v8_params, start)
 
     print("=" * 60)
@@ -545,18 +570,23 @@ def main():
     print("-" * 52)
     print("{:<20} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
     print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
-    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 日线T(近似)", r9, mdd9, len(t9)))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v11 隔日T", r9, mdd9, len(t9)))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 隔日T(旧)", r93, mdd93, len(t93)))
     print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v10.1 日内T(模拟)", r10, mdd10, len(t10)))
     print("")
-    print("  v10.1: 分级调仓+趋势保护 | 日K模拟分时(非真实分钟)")
+    print("  v11: 隔日T min_days={} | 华虹信号可隔夜".format(OVERNIGHT_T.get("min_days", 0)))
     print("")
     print("--- v10.1 末8笔 ---")
     for t in t10[-8:]:
         print("  {} {} px={:.2f} 总={:.0%} score={} ({})".format(
             t["date"], t.get("time", ""), t["px"], t["tgt"], t.get("score", ""), t["action"]))
     print("")
-    print("--- v9.3 末5笔 ---")
-    for t in t9[-5:]:
+    print("--- v11 隔日T 全部交易 ---")
+    for t in t9:
+        print("  {} px={:.2f} 总={:.0%} ({})".format(t["date"], t["px"], t["tgt"], t["action"]))
+    print("")
+    print("--- v9.3 隔日T(旧) 交易 ---")
+    for t in t93:
         print("  {} px={:.2f} 总={:.0%} ({})".format(t["date"], t["px"], t["tgt"], t["action"]))
     print("=" * 60)
 

@@ -68,7 +68,7 @@ def render_t_trading(t_result):
     if not t_result:
         return ""
     lines = []
-    mode = t_result.get("mode", "daily")
+    mode = t_result.get("mode", "overnight")
     if mode == "intraday":
         lines.append("")
         lines.append("【日内T v10.1】75%底仓 + 25%华虹分钟基准 (688347)")
@@ -89,8 +89,10 @@ def render_t_trading(t_result):
             fmt_price(t_result.get("jh_intraday_pct")),
         ))
     else:
+        title = "隔日T v11" if mode == "overnight" else "仓位结构 v9.3"
         lines.append("")
-        lines.append("【仓位结构 v9.3】75%底仓 + 25%华虹大波段做T (基准: {})".format(t_result.get("benchmark", "华虹公司")))
+        lines.append("【{}】75%底仓 + 25%华虹做T (基准: {})".format(
+            title, t_result.get("benchmark", "华虹公司")))
         if t_result.get("error"):
             lines.append("  ⚠ 华虹数据: {}".format(t_result["error"]))
             return "\n".join(lines)
@@ -105,6 +107,8 @@ def render_t_trading(t_result):
         t_result.get("t_action", ""),
         t_result.get("total_pct", 0),
     ))
+    if t_result.get("min_days"):
+        lines.append("  隔日T冷却: {} 交易日".format(t_result["min_days"]))
     if t_result.get("score") is not None:
         lines.append("  华虹T评分: {}  |  {}".format(t_result.get("score"), t_result.get("t_action", "")))
     sigs = t_result.get("signals") or []
