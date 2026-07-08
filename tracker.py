@@ -35,6 +35,7 @@ from report import render_report
 from signals import evaluate
 from snapshot import append_snapshot
 from source_compare import run_full_compare
+from t_signals import evaluate_t_trading
 
 
 def log_alert(message):
@@ -44,7 +45,7 @@ def log_alert(message):
         f.write(line)
 
 
-def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=False, iwencai_preset="fundamental", snapshot=True):
+def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=False, iwencai_preset="fundamental", snapshot=True, t_trading=True):
     klines = None
     realtime = None
     src_label = get_source_label(source)
@@ -100,6 +101,7 @@ def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=Fa
 
     indicators = compute_all(klines)
     evaluation = evaluate(klines, indicators, realtime)
+    t_result = evaluate_t_trading(klines, realtime) if t_trading and not offline else None
 
     for s in evaluation["signals"]:
         if s["level"] in ("SELL", "WARN"):
@@ -135,6 +137,7 @@ def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=Fa
             "evaluation": evaluation,
             "compare": compare_result,
             "iwencai": iwencai_result,
+            "t_trading": t_result,
         }
         print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
     else:
@@ -142,6 +145,7 @@ def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=Fa
             STOCK_NAME, realtime, indicators, evaluation, src_label,
             compare_result=compare_result if not compare_result or not compare_result.get("error") else None,
             iwencai_result=iwencai_result,
+            t_result=t_result,
         ))
         if compare_result and compare_result.get("error"):
             print("\n⚠ 双源对比失败: {}".format(compare_result["error"]))
@@ -170,6 +174,7 @@ def main():
     )
     parser.add_argument("--open-iwencai", action="store_true", help="浏览器打开问财")
     parser.add_argument("--no-snapshot", action="store_true", help="不写入每日快照 CSV")
+    parser.add_argument("--no-t", action="store_true", help="不显示华虹做T建议")
     args = parser.parse_args()
 
     if args.open_ths:
@@ -184,6 +189,7 @@ def main():
 
     compare = not args.no_compare
     snapshot = not args.no_snapshot
+    t_trading = not args.no_t
 
     if args.watch:
         interval = max(60, args.watch)
@@ -199,6 +205,7 @@ def main():
                     iwencai=args.iwencai,
                     iwencai_preset=args.iwencai_preset,
                     snapshot=snapshot,
+                    t_trading=t_trading,
                 )
                 if prev_verdict and ev["verdict"] != prev_verdict:
                     msg = "研判变化: {} → {}".format(prev_verdict, ev["verdict"])
@@ -223,6 +230,7 @@ def main():
             iwencai=args.iwencai,
             iwencai_preset=args.iwencai_preset,
             snapshot=snapshot,
+            t_trading=t_trading,
         )
 
 

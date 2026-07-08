@@ -6,6 +6,20 @@ STOCK_NAME = "晶合集成"
 # 东方财富 secid: 1=上海, 0=深圳
 SECID = "1.688249"
 
+# 仓位结构 (v9: 75%底仓 + 25%华虹做T)
+POSITION = {
+    "core_pct": 0.75,       # 底仓 — 趋势持有不动
+    "t_max_pct": 0.25,      # T仓上限
+    "t_mid_pct": 0.125,     # T仓中性
+}
+
+# 做T基准股 — 华虹公司
+BENCHMARK = {
+    "code": "688347",
+    "name": "华虹公司",
+    "secid": "1.688347",
+}
+
 # 关键价位（可根据策略调整）
 LEVELS = {
     "strong_resistance": 67.0,   # 三重顶压力

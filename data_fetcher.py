@@ -66,12 +66,13 @@ def _eastmoney_realtime():
     }
 
 
-def _eastmoney_klines(days=HISTORY_DAYS):
+def _eastmoney_klines(days=HISTORY_DAYS, secid=None):
+    secid = secid or SECID
     url = (
         "https://push2his.eastmoney.com/api/qt/stock/kline/get?"
         + urllib.parse.urlencode(
             {
-                "secid": SECID,
+                "secid": secid,
                 "fields1": "f1,f2,f3,f4,f5,f6",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                 "klt": "101",
@@ -170,6 +171,12 @@ def load_cache(source=None):
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def fetch_benchmark_klines(days=HISTORY_DAYS):
+    """拉取做T基准股（华虹公司）日K"""
+    from config import BENCHMARK
+    return _eastmoney_klines(days=days, secid=BENCHMARK["secid"])
 
 
 def open_ths_page():

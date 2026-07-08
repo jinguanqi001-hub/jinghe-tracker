@@ -64,7 +64,33 @@ def render_iwencai(iwencai_result):
     return "\n".join(lines)
 
 
-def render_report(stock_name, realtime, indicators, evaluation, source_label="", compare_result=None, iwencai_result=None):
+def render_t_trading(t_result):
+    if not t_result:
+        return ""
+    lines = []
+    lines.append("")
+    lines.append("【仓位结构 v9】75%底仓 + 25%做T (基准: {})".format(t_result.get("benchmark", "华虹公司")))
+    if t_result.get("error"):
+        lines.append("  ⚠ 华虹数据: {}".format(t_result["error"]))
+        return "\n".join(lines)
+    lines.append("  华虹现价: {}  涨跌: {}%  RSI: {}".format(
+        fmt_price(t_result.get("benchmark_price")),
+        fmt_price(t_result.get("benchmark_change_pct")),
+        fmt_price(t_result.get("benchmark_rsi")),
+    ))
+    lines.append("  底仓: {:.0%} (不动)  |  T仓: {:.0%} ({})  |  合计: {:.0%}".format(
+        t_result.get("core_pct", 0.75),
+        t_result.get("t_pct", 0),
+        t_result.get("t_action", ""),
+        t_result.get("total_pct", 0),
+    ))
+    for s in t_result.get("signals") or []:
+        icon = LEVEL_ICON.get(s["level"], "⚪")
+        lines.append("  {} {} → {}".format(icon, s["message"], s["action"]))
+    return "\n".join(lines)
+
+
+def render_report(stock_name, realtime, indicators, evaluation, source_label="", compare_result=None, iwencai_result=None, t_result=None):
     latest = indicators["latest"]
     lines = []
     lines.append("=" * 60)
@@ -143,6 +169,9 @@ def render_report(stock_name, realtime, indicators, evaluation, source_label="",
             lines.append("  {} [{}] {} → {}".format(icon, s["category"], s["message"], s["action"]))
     else:
         lines.append("  暂无触发信号")
+
+    if t_result:
+        lines.append(render_t_trading(t_result))
 
     if compare_result:
         lines.append(render_compare(compare_result))

@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-晶合688249 SuperMind v8.0 — 趋势持有 + 误杀修复
-- 破位卖出需阴线确认，避免放量反弹日清仓
-- 上升趋势中放宽卖信号、提高最低仓位
-- V型反转 / 5日动量 / MA20回踩 加速建仓
-- 67三重顶需3次失败且价≥62才触发
+晶合688249 SuperMind v9.0 — 75%底仓 + 25%华虹基准做T
+- 底仓(75%): v8趋势逻辑，仅在强卖/清仓信号时变动
+- T仓(25%): 以华虹公司(688347)为基准，日内波段加减
+- 日线回测用华虹OHLC近似日内T；实盘建议切换分钟频率
 """
 
 SOURCE_CODE = r'''
-# ===== 晶合688249 v8.0: 趋势持有 + 误杀修复 =====
+# ===== 晶合688249 v9.0: 75%底仓 + 25%华虹做T =====
 STOCK = '688249.SH'
+BENCHMARK = '688347.SH'   # 华虹公司 — T仓基准
+
+CORE_PCT = 0.75           # 底仓比例（不动）
+T_MAX = 0.25              # T仓上限
+T_MID = 0.125             # T仓中性
 
 LEADERS = {
     '688347.SH': 1.2,
@@ -36,7 +40,9 @@ def init(context):
     context.security = STOCK
     g.r67_fail = 0
     g.last_target = -1.0
-    log.info('晶合 v8.0 趋势持有 init')
+    g.core_on = False
+    g.t_sleeve = T_MID
+    log.info('晶合 v9.0 75%%底仓+25%%华虹做T init')
 
 
 def _rsi(closes, n=14):
@@ -99,6 +105,7 @@ def _vol_signals(symbol, use_levels):
     body = abs(px - op) if abs(px - op) > 0.01 else 0.01
     upper = (hi - max(op, px)) / body
     chg = (px - prev) / prev if prev else 0.0
+    intraday = (px - op) / op if op else 0.0
 
     buy = 0
     sell = 0
@@ -117,7 +124,6 @@ def _vol_signals(symbol, use_levels):
         if hi >= R67 * 0.985 and px < R67 * 0.992 and vr >= VOL_BREAK:
             sell -= 3 if not uptrend else 1
             sr.append('67放量回落')
-        # 破位需阴线确认，避免放量反弹日误杀
         if px < S58 * 0.993 and px < op and chg < 0 and vr >= VOL_PANIC and max(c[-20:]) >= S58 * 0.95:
             sell -= 3
             sr.append('破58放量阴')
@@ -175,6 +181,13 @@ def _vol_signals(symbol, use_levels):
         'vr': vr,
         'px': px,
         'uptrend': uptrend,
+        'rsi': rsi,
+        'intraday': intraday,
+        'upper': upper,
+        'ma5': ma5,
+        'ma10': ma10,
+        'op': op,
+        'lo': lo,
     }
 
 
@@ -213,36 +226,87 @@ def _analyze_leaders(context):
     return int(round(lb)), int(round(ls)), ';'.join(lbr), ';'.join(lsr)
 
 
-def _merge_target(mb, ms, lb, hold, uptrend):
-    if mb >= 3 and ms > -4:
-        if uptrend:
-            return 0.98, '趋势强买'
-        return 0.95, '强买'
+def _hh_t_sleeve(context, main_sig):
+    """以华虹公司为基准，计算25% T仓目标 (日线OHLC近似日内)"""
+    hh = _vol_signals(BENCHMARK, False)
+    if not hh or not main_sig:
+        return g.t_sleeve, 'T持有', '-'
 
-    if uptrend and ms > -5:
-        if mb >= 1:
-            return 0.98, '趋势强持'
-        if ms <= -1:
-            return 0.88, '趋势减仓'
-        return 0.92, '趋势持有'
+    score = 0
+    notes = []
 
+    # 华虹探底回升 → 晶合T买
+    if hh['lo'] <= hh['ma5'] * 1.012 and hh['px'] > hh['op'] and hh['intraday'] > 0.004:
+        score += 2
+        notes.append('华虹探底回升')
+    # 华虹MA10止跌 → 同业联动T买
+    if hh['lo'] <= hh['ma10'] * 1.012 and hh['px'] > hh['ma10'] and hh['px'] > hh['op']:
+        score += 1
+        notes.append('华虹MA10企稳')
+    # 华虹RSI超卖反弹
+    if hh['rsi'] <= 38 and hh['px'] > hh['op']:
+        score += 2
+        notes.append('华虹RSI超卖反弹')
+    # 华虹放量上影/高潮 → 晶合T卖
+    if hh['upper'] >= 0.40 and hh['vr'] >= VOL_STRONG:
+        score -= 3
+        notes.append('华虹放量上影')
+    if hh['vr'] >= VOL_CLIMAX and hh['px'] < hh['op']:
+        score -= 2
+        notes.append('华虹放量阴')
+    if hh['rsi'] >= 78:
+        score -= 2
+        notes.append('华虹RSI超买')
+    # 相对强弱: 华虹弱于晶合 → 晶合补涨T买
+    hh_prev = history(BENCHMARK, ['close'], 2, '1d', False, 'pre', True)
+    jh_prev = history(g.stock, ['close'], 2, '1d', False, 'pre', True)
+    if hh_prev is not None and jh_prev is not None and len(hh_prev) >= 2 and len(jh_prev) >= 2:
+        hh_c = list(hh_prev['close'])
+        jh_c = list(jh_prev['close'])
+        hh_chg = (hh_c[-1] - hh_c[-2]) / hh_c[-2] if hh_c[-2] else 0.0
+        jh_chg = (jh_c[-1] - jh_c[-2]) / jh_c[-2] if jh_c[-2] else 0.0
+        if hh_chg < -0.01 and jh_chg > hh_chg + 0.005:
+            score += 1
+            notes.append('华虹弱晶合强')
+        if hh_chg > 0.02 and jh_chg < hh_chg - 0.01:
+            score -= 1
+            notes.append('华虹强晶合弱')
+
+    if score >= 3:
+        tgt, act = T_MAX, 'T加满'
+    elif score >= 1:
+        tgt, act = T_MID, 'T半仓'
+    elif score <= -3:
+        tgt, act = 0.0, 'T清空'
+    elif score <= -1:
+        tgt, act = T_MID * 0.5, 'T减至¼'
+    else:
+        tgt, act = g.t_sleeve, 'T持有'
+
+    g.t_sleeve = tgt
+    return tgt, act, ';'.join(notes) if notes else '-'
+
+
+def _core_target(mb, ms, lb, hold, uptrend):
+    """底仓75%: 仅在建仓/清仓时变动，中间不动"""
     if ms <= -8:
-        return 0.0, '清仓'
-    if ms <= -6:
-        return 0.40, '重度减仓'
-    if ms <= -3:
-        return 0.70, '轻度减仓'
-    if mb >= 4:
-        return 0.98, '强买'
-    if mb >= 2:
-        return 0.85, '买入加仓'
-    if mb >= 1:
-        return 0.80, '偏多持有'
-    if mb + ms <= -2:
-        return 0.55, '偏空降仓'
-    if hold <= 0 and mb == 0 and lb >= LEADER_BUY_MIN:
-        return 0.85, '领先指引建仓'
-    return None, '观望'
+        g.core_on = False
+        return 0.0, '底仓清仓'
+
+    if not g.core_on:
+        if mb >= 2 or lb >= LEADER_BUY_MIN:
+            g.core_on = True
+            return CORE_PCT, '底仓建仓'
+        if mb >= 1 and uptrend:
+            g.core_on = True
+            return CORE_PCT, '底仓趋势建仓'
+        return 0.0, '空仓'
+
+    # 已持底仓 — 不动，除非极端破位
+    if ms <= -6 and not uptrend:
+        g.core_on = False
+        return 0.0, '底仓破位清仓'
+    return CORE_PCT, '底仓持有'
 
 
 def handle_bar(context, bar_dict):
@@ -259,19 +323,21 @@ def handle_bar(context, bar_dict):
     total = context.portfolio.total_value
     pos_pct = (pos.market_value / total) if (pos and total > 0) else 0.0
 
-    tgt, action = _merge_target(mb, ms, lb, hold, main['uptrend'])
-    if tgt is None:
-        log.info(
-            '{} px={:.2f} vr={:.2f} m={}/{} L={}/{} pos={:.0%} 观望'.format(
-                get_datetime(), price, main['vr'], mb, ms, lb, ls, pos_pct
-            )
-        )
-        return
+    core_tgt, core_act = _core_target(mb, ms, lb, hold, main['uptrend'])
+    t_tgt, t_act, t_note = _hh_t_sleeve(context, main)
+
+    if core_tgt <= 0:
+        tgt = 0.0
+        action = core_act
+        g.t_sleeve = T_MID
+    else:
+        tgt = min(core_tgt + t_tgt, 1.0)
+        action = '{}+{}'.format(core_act, t_act)
 
     log.info(
-        '{} px={:.2f} m={}/{} L={}/{} -> {:.0%} {} | {} / {} | 领先:{} / {}'.format(
-            get_datetime(), price, mb, ms, lb, ls, tgt, action,
-            main['br'] or '-', main['sr'] or '-', lbr or '-', lsr or '-',
+        '{} px={:.2f} 底={:.0%} T={:.0%} 总={:.0%} {} | m={}/{} | 华虹T:{} | {} / {} | 领先:{}'.format(
+            get_datetime(), price, core_tgt, t_tgt, tgt, action,
+            mb, ms, t_note, main['br'] or '-', main['sr'] or '-', lbr or '-',
         )
     )
 
@@ -283,5 +349,5 @@ def handle_bar(context, bar_dict):
     if abs(g.last_target - tgt) >= REBAL_MIN or (tgt == 0 and hold > 0) or (tgt > 0 and hold == 0):
         order_target_percent(g.stock, tgt)
         g.last_target = tgt
-        log.info('调仓 -> {:.0%} ({})'.format(tgt, action))
+        log.info('调仓 -> {:.0%} (底{:.0%}+T{:.0%})'.format(tgt, core_tgt, t_tgt))
 '''
