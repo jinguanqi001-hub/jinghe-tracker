@@ -9,6 +9,7 @@ import os
 
 from config import POSITION
 from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
+from t_logic import score_hh_t_signals, t_pct_from_score
 
 
 CORE_PCT = POSITION["core_pct"]
@@ -205,35 +206,18 @@ def hh_t_sleeve(hh_hist, jh_hist, t_sleeve):
     sig = vol_signals(hh_hist, False, BASE_PARAMS)
     if not sig:
         return t_sleeve
-    score = 0
-    if sig["lo"] <= sig["ma5"] * 1.012 and sig["px"] > sig["op"] and sig["intraday"] > 0.004:
-        score += 2
-    if sig["lo"] <= sig["ma10"] * 1.012 and sig["px"] > sig["ma10"] and sig["px"] > sig["op"]:
-        score += 1
-    if sig["rsi"] <= 38 and sig["px"] > sig["op"]:
-        score += 2
-    if sig["upper"] >= 0.40 and sig["vr"] >= 1.55:
-        score -= 3
-    if sig["vr"] >= 1.90 and sig["px"] < sig["op"]:
-        score -= 2
-    if sig["rsi"] >= 78:
-        score -= 2
-    if len(hh_hist) >= 2 and len(jh_hist) >= 2:
+    hh_chg = jh_chg = 0.0
+    if len(hh_hist) >= 2:
         hh_chg = (hh_hist[-1]["close"] - hh_hist[-2]["close"]) / hh_hist[-2]["close"]
+    if len(jh_hist) >= 2:
         jh_chg = (jh_hist[-1]["close"] - jh_hist[-2]["close"]) / jh_hist[-2]["close"]
-        if hh_chg < -0.01 and jh_chg > hh_chg + 0.005:
-            score += 1
-        if hh_chg > 0.02 and jh_chg < hh_chg - 0.01:
-            score -= 1
-    if score >= 3:
-        return T_MAX
-    if score >= 1:
-        return T_MID
-    if score <= -3:
-        return 0.0
-    if score <= -1:
-        return T_MID * 0.5
-    return t_sleeve
+    score, _ = score_hh_t_signals(
+        sig["px"], sig["op"], hh_hist[-1]["high"], sig["lo"],
+        sig["ma5"], sig["ma10"], sig["rsi"], sig["intraday"],
+        sig["upper"], sig["vr"], hh_chg, jh_chg,
+    )
+    t_pct, _ = t_pct_from_score(score, T_MAX, T_MID, prev_t=t_sleeve)
+    return t_pct
 
 
 def core_target_v9(mb, ms, uptrend, core_on, lb=0):
@@ -338,6 +322,8 @@ def backtest_v9(jh, hh, params, start_idx=21):
 
         core_tgt, core_on = core_target_v9(mb, ms, sig["uptrend"], core_on)
         t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve)
+        if core_tgt > 0:
+            t_sleeve = max(t_sleeve, T_MID)  # 底仓在时T永不低于12.5%
         tgt = 0.0 if core_tgt <= 0 else min(core_tgt + t_sleeve, 1.0)
         action = "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
 
@@ -411,7 +397,7 @@ def main():
     print("-" * 48)
     print("{:<16} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
     print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
-    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.0 75%+25%T", r9, mdd9, len(t9)))
+    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.1 75%+25%T", r9, mdd9, len(t9)))
     print("")
     print("--- v9 末5笔 ---")
     for t in t9[-5:]:

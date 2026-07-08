@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-晶合688249 SuperMind v9.0 — 75%底仓 + 25%华虹基准做T
+晶合688249 SuperMind v9.1 — 75%底仓 + 25%华虹做T (放宽T减仓)
 - 底仓(75%): v8趋势逻辑，仅在强卖/清仓信号时变动
 - T仓(25%): 以华虹公司(688347)为基准，日内波段加减
 - 日线回测用华虹OHLC近似日内T；实盘建议切换分钟频率
 """
 
 SOURCE_CODE = r'''
-# ===== 晶合688249 v9.0: 75%底仓 + 25%华虹做T =====
+# ===== 晶合688249 v9.1: 75%底仓 + 25%华虹做T (放宽T减仓) =====
 STOCK = '688249.SH'
 BENCHMARK = '688347.SH'   # 华虹公司 — T仓基准
 
@@ -42,7 +42,7 @@ def init(context):
     g.last_target = -1.0
     g.core_on = False
     g.t_sleeve = T_MID
-    log.info('晶合 v9.0 75%%底仓+25%%华虹做T init')
+    log.info('晶合 v9.1 75%%底仓+25%%华虹做T (放宽T减仓) init')
 
 
 def _rsi(closes, n=14):
@@ -247,15 +247,15 @@ def _hh_t_sleeve(context, main_sig):
     if hh['rsi'] <= 38 and hh['px'] > hh['op']:
         score += 2
         notes.append('华虹RSI超卖反弹')
-    # 华虹放量上影/高潮 → 晶合T卖
-    if hh['upper'] >= 0.40 and hh['vr'] >= VOL_STRONG:
-        score -= 3
-        notes.append('华虹放量上影')
-    if hh['vr'] >= VOL_CLIMAX and hh['px'] < hh['op']:
+    # 华虹放量上影/高潮 → 晶合T卖 (v9.1放宽: 需天量+更长上影)
+    if hh['upper'] >= 0.50 and hh['vr'] >= VOL_CLIMAX:
         score -= 2
-        notes.append('华虹放量阴')
-    if hh['rsi'] >= 78:
-        score -= 2
+        notes.append('华虹天量上影')
+    if hh['vr'] >= VOL_CLIMAX and hh['px'] < hh['op'] and hh['intraday'] < -0.01:
+        score -= 1
+        notes.append('华虹放量长阴')
+    if hh['rsi'] >= 85:
+        score -= 1
         notes.append('华虹RSI超买')
     # 相对强弱: 华虹弱于晶合 → 晶合补涨T买
     hh_prev = history(BENCHMARK, ['close'], 2, '1d', False, 'pre', True)
@@ -268,7 +268,7 @@ def _hh_t_sleeve(context, main_sig):
         if hh_chg < -0.01 and jh_chg > hh_chg + 0.005:
             score += 1
             notes.append('华虹弱晶合强')
-        if hh_chg > 0.02 and jh_chg < hh_chg - 0.01:
+        if hh_chg > 0.03 and jh_chg < hh_chg - 0.015:
             score -= 1
             notes.append('华虹强晶合弱')
 
@@ -276,12 +276,10 @@ def _hh_t_sleeve(context, main_sig):
         tgt, act = T_MAX, 'T加满'
     elif score >= 1:
         tgt, act = T_MID, 'T半仓'
-    elif score <= -3:
+    elif score <= -6:
         tgt, act = 0.0, 'T清空'
-    elif score <= -1:
-        tgt, act = T_MID * 0.5, 'T减至¼'
     else:
-        tgt, act = g.t_sleeve, 'T持有'
+        tgt, act = max(g.t_sleeve, T_MID), 'T持有'
 
     g.t_sleeve = tgt
     return tgt, act, ';'.join(notes) if notes else '-'
@@ -331,6 +329,7 @@ def handle_bar(context, bar_dict):
         action = core_act
         g.t_sleeve = T_MID
     else:
+        t_tgt = max(t_tgt, T_MID)  # 底仓在时T永不低于12.5%
         tgt = min(core_tgt + t_tgt, 1.0)
         action = '{}+{}'.format(core_act, t_act)
 

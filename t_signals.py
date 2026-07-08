@@ -3,7 +3,8 @@
 
 from config import BENCHMARK, POSITION
 from data_fetcher import fetch_benchmark_klines
-from indicators import compute_all, rsi
+from indicators import rsi
+from t_logic import score_hh_t_signals, t_pct_from_score
 
 
 def _sig(level, message, action):
@@ -11,10 +12,7 @@ def _sig(level, message, action):
 
 
 def evaluate_t_trading(jh_klines, jh_realtime=None):
-    """
-    计算 T 仓建议 (0 / 12.5% / 25%)，基准为华虹公司。
-    jh_klines: 晶合日K
-    """
+    """计算 T 仓建议 (0 / 12.5% / 25%)，基准为华虹公司。"""
     try:
         hh_klines = fetch_benchmark_klines()
     except Exception as e:
@@ -55,46 +53,22 @@ def evaluate_t_trading(jh_klines, jh_realtime=None):
     hh_chg = (hh_px - hh_prev["close"]) / hh_prev["close"] if hh_prev["close"] else 0.0
     jh_chg = (jh["close"] - jh_prev["close"]) / jh_prev["close"] if jh_prev["close"] else 0.0
 
+    score, notes = score_hh_t_signals(
+        hh_px, hh_op, hh_hi, hh_lo, hh_ma5, hh_ma10, hh_rsi, hh_intraday,
+        hh_upper, hh_vr, hh_chg, jh_chg,
+    )
+
     signals = []
-    score = 0
+    for n in notes:
+        if any(k in n for k in ("回升", "企稳", "超卖", "弱晶合")):
+            signals.append(_sig("BUY", n, "T仓加"))
+        else:
+            signals.append(_sig("SELL", n, "T仓减"))
 
-    if hh_lo <= hh_ma5 * 1.012 and hh_px > hh_op and hh_intraday > 0.004:
-        score += 2
-        signals.append(_sig("BUY", "华虹探底回升", "T仓加满至25%"))
-    if hh_lo <= hh_ma10 * 1.012 and hh_px > hh_ma10 and hh_px > hh_op:
-        score += 1
-        signals.append(_sig("BUY", "华虹MA10企稳", "T仓加至12.5%"))
-    if hh_rsi <= 38 and hh_px > hh_op:
-        score += 2
-        signals.append(_sig("BUY", "华虹RSI超卖反弹 (RSI {:.1f})".format(hh_rsi), "T仓加满"))
-    if hh_upper >= 0.40 and hh_vr >= 1.55:
-        score -= 3
-        signals.append(_sig("SELL", "华虹放量上影", "T仓清空"))
-    if hh_vr >= 1.90 and hh_px < hh_op:
-        score -= 2
-        signals.append(_sig("SELL", "华虹放量阴线", "T仓减至6%"))
-    if hh_rsi >= 78:
-        score -= 2
-        signals.append(_sig("SELL", "华虹RSI超买 (RSI {:.1f})".format(hh_rsi), "T仓清空"))
-    if hh_chg < -0.01 and jh_chg > hh_chg + 0.005:
-        score += 1
-        signals.append(_sig("BUY", "华虹弱于晶合 — 补涨窗口", "T仓加"))
-    if hh_chg > 0.02 and jh_chg < hh_chg - 0.01:
-        score -= 1
-        signals.append(_sig("SELL", "华虹强于晶合 — 晶合滞后", "T仓减"))
+    t_pct, t_action = t_pct_from_score(score, POSITION["t_max_pct"], POSITION["t_mid_pct"])
+    t_action = {"T加满": "T加满(25%)", "T半仓": "T半仓(12.5%)", "T清空": "T清空(0%)",
+                "T减至¼": "T减至(6%)", "T持有": "T持有(12.5%)"}.get(t_action, t_action)
 
-    if score >= 3:
-        t_pct, t_action = POSITION["t_max_pct"], "T加满(25%)"
-    elif score >= 1:
-        t_pct, t_action = POSITION["t_mid_pct"], "T半仓(12.5%)"
-    elif score <= -3:
-        t_pct, t_action = 0.0, "T清空(0%)"
-    elif score <= -1:
-        t_pct, t_action = POSITION["t_mid_pct"] * 0.5, "T减至(6%)"
-    else:
-        t_pct, t_action = POSITION["t_mid_pct"], "T持有(12.5%)"
-
-    core_pct = POSITION["core_pct"]
     return {
         "benchmark": BENCHMARK["name"],
         "benchmark_code": BENCHMARK["code"],
@@ -103,8 +77,8 @@ def evaluate_t_trading(jh_klines, jh_realtime=None):
         "benchmark_rsi": hh_rsi,
         "t_pct": t_pct,
         "t_action": t_action,
-        "core_pct": core_pct,
-        "total_pct": min(core_pct + t_pct, 1.0),
+        "core_pct": POSITION["core_pct"],
+        "total_pct": min(POSITION["core_pct"] + t_pct, 1.0),
         "score": score,
         "signals": signals,
     }
