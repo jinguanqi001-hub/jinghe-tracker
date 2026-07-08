@@ -341,7 +341,7 @@ def handle_bar(context, bar_dict):
 # 用法: research_strategy(INTRADAY_SOURCE_CODE, frequency='MINUTE', ...)
 # 底仓75%仍用日线趋势；T仓25%用华虹分钟级信号 0↔25%
 INTRADAY_SOURCE_CODE = r'''
-# ===== 晶合688249 v10: 75%底仓 + 25%华虹日内T (分钟级) =====
+# ===== 晶合688249 v10.1: 75%底仓 + 25%华虹日内T (分钟级) =====
 STOCK = '688249.SH'
 BENCHMARK = '688347.SH'
 
@@ -349,16 +349,21 @@ CORE_PCT = 0.75
 T_MAX = 0.25
 T_MID = 0.125
 REBAL_MIN = 0.015
-MIN_TRADE_GAP = 5          # 分钟，T仓最短调仓间隔
+MIN_TRADE_GAP = 10         # 分钟，T仓最短调仓间隔
 
-# 日内T阈值
-PULLBACK_BUY = 0.012
-BOUNCE_BUY = 0.004
-SPIKE_SELL = 0.018
-DROP_SELL = 0.008
-RSI_OS = 38
-RSI_OB = 68
-REL_GAP = 0.005
+# v10.1 日内T阈值 — 减频 + 趋势保护
+PULLBACK_BUY = 0.015
+BOUNCE_BUY = 0.005
+SPIKE_SELL = 0.022
+DROP_SELL = 0.010
+RSI_OS = 35
+RSI_OB = 72
+REL_GAP = 0.008
+BUY_FULL = 3
+BUY_MID = 2
+SELL_CUT = -2
+SELL_CLEAR = -3
+SELL_FORCE = -4
 
 
 def init(context):
@@ -368,7 +373,8 @@ def init(context):
     g.t_sleeve = T_MAX
     g.last_t_bar = -999
     g.last_core_day = None
-    log.info('晶合 v10 75%%底仓+25%%华虹日内T (MINUTE) init')
+    g.uptrend = True
+    log.info('晶合 v10.1 75%%底仓+25%%华虹日内T (MINUTE) init')
 
 
 def _rsi(closes, n=14):
@@ -410,6 +416,7 @@ def _daily_core(context):
     if g.core_on and px < ma20 * 0.97 and px < list(df['open'])[-1]:
         g.core_on = False
 
+    g.uptrend = uptrend
     g.last_core_day = day_key
     return CORE_PCT if g.core_on else 0.0
 
@@ -441,7 +448,7 @@ def _intraday_stats(symbol, n=60):
 
 
 def _hh_intraday_t(context, bar_idx):
-    """华虹分钟T: score>=2加满 / score<=-2全出"""
+    """v10.1 华虹分钟T: 分级调仓 + 趋势保护"""
     hh = _intraday_stats(BENCHMARK, 60)
     jh = _intraday_stats(g.stock, 60)
     if not hh or not jh:
@@ -451,6 +458,7 @@ def _hh_intraday_t(context, bar_idx):
     notes = []
     px, prev, vwap = hh['px'], hh['prev'], hh['vwap']
     op, intraday = hh['op'], hh['intraday']
+    t_min = T_MID if g.uptrend else 0.0
 
     if hh['pullback'] >= PULLBACK_BUY and px > prev and px >= vwap * 0.998:
         score += 2
@@ -482,18 +490,31 @@ def _hh_intraday_t(context, bar_idx):
     if gap >= REL_GAP:
         score += 1
         notes.append('晶合强于华虹')
-    if gap <= -REL_GAP and intraday > 0.01:
+    if gap <= -REL_GAP and intraday > 0.015:
         score -= 1
         notes.append('华虹强于晶合')
 
-    if score >= 2:
+    if score >= BUY_FULL:
         tgt, act = T_MAX, 'T加满'
-    elif score <= -2:
-        tgt, act = 0.0, 'T全出'
+    elif score >= BUY_MID:
+        tgt = max(T_MID, t_min)
+        act = 'T半仓加' if g.t_sleeve < T_MAX else 'T持有'
+        if g.t_sleeve >= T_MAX:
+            tgt = g.t_sleeve
+    elif score <= SELL_CLEAR:
+        if g.uptrend and score > SELL_FORCE:
+            tgt, act = T_MID, '趋势T保护'
+        else:
+            tgt, act = t_min, 'T全出'
+    elif score <= SELL_CUT:
+        tgt = max(T_MID, t_min)
+        act = 'T半仓减' if g.t_sleeve > t_min else 'T持有'
+        if g.t_sleeve <= t_min:
+            tgt = g.t_sleeve
     else:
         tgt, act = g.t_sleeve, 'T持有'
 
-    if bar_idx - g.last_t_bar >= MIN_TRADE_GAP or act != 'T持有':
+    if bar_idx - g.last_t_bar >= MIN_TRADE_GAP or act not in ('T持有',):
         if tgt != g.t_sleeve:
             g.t_sleeve = tgt
             g.last_t_bar = bar_idx

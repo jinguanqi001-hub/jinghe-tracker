@@ -7,7 +7,7 @@ import copy
 import json
 import os
 
-from config import POSITION
+from config import INTRADAY_T, POSITION
 from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
 from intraday_t_logic import score_intraday_hh, t_pct_from_intraday_score
 from t_logic import score_hh_t_signals, t_pct_from_score, core_should_exit, core_should_enter
@@ -402,7 +402,7 @@ def backtest_v10(jh, hh, params, start_idx=21):
     r67_fail, last_target = 0, -1.0
     core_on, t_sleeve = False, T_MAX
     rebal_min = params.get("REBAL_MIN", 0.015)
-    min_tick_gap = 2
+    min_tick_gap = INTRADAY_T.get("min_tick_gap", 4)
     trades, equity = [], []
 
     for i in range(start_idx, len(jh)):
@@ -439,7 +439,9 @@ def backtest_v10(jh, hh, params, start_idx=21):
             hh_state = _intraday_from_ticks(hh_ticks, hh_pre)
 
             score, _, _ = score_intraday_hh(hh_state, jh_state)
-            new_t, t_act = t_pct_from_intraday_score(score, prev_t=t_sleeve, last_time=hh_state["last_time"])
+            new_t, t_act = t_pct_from_intraday_score(
+                score, prev_t=t_sleeve, last_time=hh_state["last_time"], uptrend=sig["uptrend"],
+            )
 
             if i == start_idx and k == 0:
                 tgt = 1.0
@@ -544,11 +546,11 @@ def main():
     print("{:<20} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
     print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
     print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 日线T(近似)", r9, mdd9, len(t9)))
-    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v10 日内T(模拟)", r10, mdd10, len(t10)))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v10.1 日内T(模拟)", r10, mdd10, len(t10)))
     print("")
-    print("  v10 说明: 用日K OHLC 模拟分时路径，非真实分钟数据")
+    print("  v10.1: 分级调仓+趋势保护 | 日K模拟分时(非真实分钟)")
     print("")
-    print("--- v10 末8笔 ---")
+    print("--- v10.1 末8笔 ---")
     for t in t10[-8:]:
         print("  {} {} px={:.2f} 总={:.0%} score={} ({})".format(
             t["date"], t.get("time", ""), t["px"], t["tgt"], t.get("score", ""), t["action"]))

@@ -39,14 +39,21 @@ from source_compare import run_full_compare
 from t_signals import evaluate_t_trading
 
 
-def evaluate_intraday_t_trading():
+def evaluate_intraday_t_trading(klines=None):
     """日内T — 华虹分钟 tick 基准"""
     try:
         from ths_fetcher import fetch_benchmark_intraday, fetch_intraday
         from intraday_t_logic import evaluate_intraday_t
         hh = fetch_benchmark_intraday()
         jh = fetch_intraday()
-        return evaluate_intraday_t(hh, jh)
+        uptrend = False
+        if klines and len(klines) >= 20:
+            closes = [b["close"] for b in klines]
+            ma5 = sum(closes[-5:]) / 5
+            ma10 = sum(closes[-10:]) / 10
+            ma20 = sum(closes[-20:]) / 20
+            uptrend = closes[-1] > ma20 and ma5 > ma10 > ma20
+        return evaluate_intraday_t(hh, jh, uptrend=uptrend)
     except Exception as e:
         return {"error": str(e), "mode": "intraday"}
 

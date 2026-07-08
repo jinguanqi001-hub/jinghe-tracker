@@ -33,21 +33,26 @@ T_THRESHOLDS = {
     "rebal_min": 0.015,
 }
 
-# 日内T (分钟级华虹基准) — v10
+# 日内T (分钟级华虹基准) — v10.1 减频+趋势保护
 INTRADAY_T = {
-    "buy_score_full": 2,
-    "sell_score_clear": -2,
-    "pullback_buy": 0.012,       # 华虹自日内高点回落≥1.2%后企稳
-    "bounce_buy": 0.004,         # 华虹自低点反弹≥0.4%
-    "spike_sell": 0.018,         # 华虹自日内低点拉升≥1.8%后转弱
-    "drop_sell": 0.008,          # 华虹自高点回落≥0.8%
-    "rsi_oversold": 38,
-    "rsi_overbought": 68,
-    "rel_strength_gap": 0.005,   # 晶合-华虹 相对强弱差
+    "buy_score_full": 3,         # 加满T需更强信号
+    "buy_score_mid": 2,          # 中等买入 → T半仓
+    "sell_score_cut": -2,        # 轻度卖出 → T半仓(非全出)
+    "sell_score_clear": -3,      # 强卖 → T全出
+    "sell_score_force": -4,      # 趋势保护下强制全出
+    "pullback_buy": 0.015,
+    "bounce_buy": 0.005,
+    "spike_sell": 0.022,
+    "drop_sell": 0.010,
+    "rsi_oversold": 35,
+    "rsi_overbought": 72,
+    "rel_strength_gap": 0.008,
     "rebal_min": 0.015,
-    "min_trade_interval_sec": 300,  # T仓最短间隔5分钟，防抖动
-    "session_end_flatten": False,   # 收盘前是否强制T归位(默认否，T可隔夜)
-    "flatten_time": "14:50",        # 若开启 flatten，此时间后T回到 t_mid
+    "min_trade_interval_sec": 600,
+    "min_tick_gap": 4,           # 回测模拟: 最少间隔4个tick
+    "trend_lock": True,          # 晶合日线多头 → T仓不低于12.5%
+    "session_end_flatten": False,
+    "flatten_time": "14:50",
 }
 
 # 关键价位（可根据策略调整）

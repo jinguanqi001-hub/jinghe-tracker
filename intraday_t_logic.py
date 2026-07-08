@@ -72,42 +72,61 @@ def score_intraday_hh(hh, jh, hh_daily=None):
     if gap >= th["rel_strength_gap"]:
         score += 1
         notes.append("晶合强于华虹({:+.1f}%)".format(gap * 100))
-    if gap <= -th["rel_strength_gap"] and hh_chg > 0.01:
+    if gap <= -th["rel_strength_gap"] and hh_chg > 0.015:
         score -= 1
         notes.append("华虹强于晶合({:+.1f}%)".format(-gap * 100))
 
     return score, notes, hh_rsi
 
 
-def t_pct_from_intraday_score(score, prev_t=None, last_time=None):
-    """日内T仓位：score≥2加满 / score≤-2全出 / 其余维持"""
+def t_pct_from_intraday_score(score, prev_t=None, last_time=None, uptrend=False):
+    """日内T仓位 v10.1：分级调仓 + 趋势保护"""
     th = INTRADAY_T
     t_max = POSITION["t_max_pct"]
     t_mid = POSITION["t_mid_pct"]
+    t_min = 0.0
+    if uptrend and th.get("trend_lock"):
+        t_min = t_mid
 
     if last_time and th.get("session_end_flatten") and last_time >= th.get("flatten_time", "14:50").replace(":", ""):
-        return t_mid, "收盘T归位"
+        return max(t_mid, t_min), "收盘T归位"
 
     if score >= th["buy_score_full"]:
         return t_max, "T加满"
+    if score >= th.get("buy_score_mid", 2):
+        target = max(t_mid, t_min)
+        if prev_t is not None and prev_t >= t_max:
+            return prev_t, "T持有"
+        return target, "T半仓加"
     if score <= th["sell_score_clear"]:
-        return 0.0, "T全出"
+        if uptrend and th.get("trend_lock") and score > th.get("sell_score_force", -4):
+            return t_mid, "趋势T保护"
+        return t_min, "T全出"
+    if score <= th.get("sell_score_cut", -2):
+        if uptrend and th.get("trend_lock"):
+            return prev_t if prev_t is not None else t_max, "T持有"
+        if prev_t is not None and prev_t <= t_min:
+            return prev_t, "T持有"
+        return max(t_mid, t_min), "T半仓减"
     if prev_t is not None:
         return prev_t, "T持有"
     return t_max, "T初始满"
 
 
-def evaluate_intraday_t(hh_intraday, jh_intraday, prev_t=None):
+def evaluate_intraday_t(hh_intraday, jh_intraday, prev_t=None, uptrend=False):
     """完整日内T评估"""
     score, notes, hh_rsi = score_intraday_hh(hh_intraday, jh_intraday)
     t_pct, t_action = t_pct_from_intraday_score(
-        score, prev_t=prev_t, last_time=hh_intraday.get("last_time")
+        score, prev_t=prev_t, last_time=hh_intraday.get("last_time"), uptrend=uptrend,
     )
     core_pct = POSITION["core_pct"]
     labels = {
         "T加满": "T加满(25%) → 总仓100%",
         "T全出": "T全出(0%) → 总仓75%",
         "T持有": "T持有",
+        "T半仓加": "T半仓加(12.5%) → 总仓87.5%",
+        "T半仓减": "T半仓减(12.5%) → 总仓87.5%",
+        "趋势T保护": "趋势T保护(12.5%) → 总仓87.5%",
         "T初始满": "T初始满(25%)",
         "收盘T归位": "收盘T归位(12.5%)",
     }
