@@ -28,6 +28,7 @@ OVERNIGHT_T = {
     "trend_floor": False,
     "min_days": 5,
     "rebal_min": 0.015,
+    "target_success_rate": 90,
     "confirm_sell": False,
     "confirm_dampen": 1,
     "jh_rsi_sell": None,
@@ -67,6 +68,7 @@ INTRADAY_T = {
     "rsi_overbought": 72,
     "rel_strength_gap": 0.008,
     "rebal_min": 0.015,
+    "target_success_rate": 90,
     "min_trade_interval_sec": 600,
     "min_tick_gap": 4,           # 回测模拟: 最少间隔4个tick
     "trend_lock": True,          # 晶合日线多头 → T仓不低于12.5%

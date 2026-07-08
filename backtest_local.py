@@ -260,6 +260,31 @@ def max_drawdown(equity_curve):
     return mdd * 100
 
 
+def t_roundtrip_success(trades):
+    """统计 T全出→T加满 的回补成功率(买回价<卖出价)"""
+    exits = []
+    rounds = []
+    for t in trades:
+        t_pct = t.get("t")
+        if t_pct == 0.0:
+            exits.append(t)
+        elif t_pct == T_MAX and exits:
+            e = exits.pop(0)
+            ok = t["px"] < e["px"]
+            rounds.append({
+                "sell_date": e["date"],
+                "sell_px": e["px"],
+                "buy_date": t["date"],
+                "buy_px": t["px"],
+                "ok": ok,
+                "spread_pct": (e["px"] - t["px"]) / e["px"] * 100 if e["px"] else 0.0,
+            })
+    if not rounds:
+        return 0, 0.0, []
+    wins = sum(1 for r in rounds if r["ok"])
+    return len(rounds), wins / len(rounds) * 100, rounds
+
+
 BASE_PARAMS = {
     "R67": 67.0, "R61": 61.0, "S58": 58.0, "S52": 52.0,
     "VOL_BREAK": 1.30, "VOL_STRONG": 1.55, "VOL_CLIMAX": 1.90,
@@ -557,6 +582,7 @@ def main():
     r9, t9, mdd9 = backtest_v9(jh, hh, v8_params, start, overnight=True)
     r93, t93, mdd93 = backtest_v9(jh, hh, v8_params, start, overnight=False)
     r10, t10, mdd10 = backtest_v10(jh, hh, v8_params, start)
+    rt_n, rt_win, rt_rows = t_roundtrip_success(t9)
 
     print("=" * 60)
     print("  晶合688249 回测报告 (约 {} 个交易日)".format(len(jh) - start))
@@ -575,6 +601,9 @@ def main():
     print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v10.1 日内T(模拟)", r10, mdd10, len(t10)))
     print("")
     print("  v11: 隔日T min_days={} | 华虹信号可隔夜".format(OVERNIGHT_T.get("min_days", 0)))
+    print("  v11 T回补成功率: {:.1f}% ({}/{})".format(rt_win, int(round(rt_win * rt_n / 100)) if rt_n else 0, rt_n))
+    if OVERNIGHT_T.get("target_success_rate"):
+        print("  目标成功率: {}%".format(OVERNIGHT_T["target_success_rate"]))
     print("")
     print("--- v10.1 末8笔 ---")
     for t in t10[-8:]:
@@ -584,6 +613,14 @@ def main():
     print("--- v11 隔日T 全部交易 ---")
     for t in t9:
         print("  {} px={:.2f} 总={:.0%} ({})".format(t["date"], t["px"], t["tgt"], t["action"]))
+    if rt_rows:
+        print("")
+        print("--- v11 T回补明细 ---")
+        for r in rt_rows:
+            flag = "✓" if r["ok"] else "✗"
+            print("  {} {}@{:.2f} -> {}@{:.2f} spread={:+.1f}%".format(
+                flag, r["sell_date"], r["sell_px"], r["buy_date"], r["buy_px"], r["spread_pct"]))
+
     print("")
     print("--- v9.3 隔日T(旧) 交易 ---")
     for t in t93:
