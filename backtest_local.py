@@ -1,14 +1,76 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""本地回测：复现 SuperMind 策略逻辑并对比改进版"""
+"""本地回测：v8 / v9(75%底仓+25%华虹做T) / 买入持有"""
 
-import json
+import argparse
 import copy
+import json
+import os
+
+from config import POSITION
+from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
+
+
+CORE_PCT = POSITION["core_pct"]
+T_MAX = POSITION["t_max_pct"]
+T_MID = POSITION["t_mid_pct"]
 
 
 def load_klines(path="data/688249_daily_ths.json"):
     with open(path, encoding="utf-8") as f:
         return json.load(f)["klines"]
+
+
+def fetch_sina(symbol, days=280):
+    import ssl
+    import urllib.request
+
+    url = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "CN_MarketData.getKLineData?symbol={}&scale=240&ma=no&datalen={}".format(symbol, days)
+    )
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+    rows = []
+    for b in raw:
+        prev = rows[-1]["close"] if rows else float(b["close"])
+        c = float(b["close"])
+        rows.append(
+            {
+                "date": b["day"],
+                "open": float(b["open"]),
+                "close": c,
+                "high": float(b["high"]),
+                "low": float(b["low"]),
+                "volume": int(float(b["volume"])),
+                "change_pct": (c - prev) / prev * 100 if prev else 0.0,
+                "turnover_pct": 0.0,
+                "source": "sina",
+            }
+        )
+    return rows
+
+
+def fetch_online(days=280):
+    try:
+        from config import SECID
+        jh = _eastmoney_klines(days=days, secid=SECID)
+        hh = fetch_benchmark_klines(days=days)
+        return jh, hh, "eastmoney"
+    except Exception:
+        jh = fetch_sina("sh688249", days)
+        hh = fetch_sina("sh688347", days)
+        return jh, hh, "sina"
+
+
+def align_klines(jh, hh):
+    hh_map = {b["date"]: b for b in hh}
+    dates = [b["date"] for b in jh if b["date"] in hh_map]
+    return [b for b in jh if b["date"] in hh_map], [hh_map[d] for d in dates]
 
 
 def rsi(closes, n=14):
@@ -35,41 +97,33 @@ def vol_signals(history, use_levels, params):
     c = [b["close"] for b in history]
     v = [b["volume"] for b in history]
 
-    px = c[-1]
-    hi = h[-1]
-    lo = l[-1]
-    op = o[-1]
-    prev = c[-2]
-    prev2 = c[-3]
-
+    px, hi, lo, op = c[-1], h[-1], l[-1], o[-1]
+    prev, prev2 = c[-2], c[-3]
     ma5 = sum(c[-5:]) / 5
     ma10 = sum(c[-10:]) / 10
     ma20 = sum(c[-20:]) / 20
     rsi_v = rsi(c)
+    uptrend = px > ma20 and ma5 > ma10 > ma20
 
     vma5 = sum(v[-6:-1]) / 5 if len(v) >= 6 else float(v[-1] or 1)
     if vma5 <= 0:
         vma5 = 1.0
     vr = float(v[-1] or 0) / vma5
     denom = sum(v[-7:-2]) / 5 if len(v) >= 7 else vma5
-    if denom <= 0:
-        denom = 1.0
-    vr_prev = float(v[-2] or 0) / denom
+    vr_prev = float(v[-2] or 0) / denom if denom > 0 else 1.0
 
     body = abs(px - op) if abs(px - op) > 0.01 else 0.01
     upper = (hi - max(op, px)) / body
     chg = (px - prev) / prev if prev else 0.0
+    intraday = (px - op) / op if op else 0.0
 
     R67, R61, S58, S52 = params["R67"], params["R61"], params["S58"], params["S52"]
     VOL_BREAK = params["VOL_BREAK"]
     VOL_STRONG = params["VOL_STRONG"]
     VOL_CLIMAX = params["VOL_CLIMAX"]
     VOL_PANIC = params["VOL_PANIC"]
-    SHADOW_RATIO = params["SHADOW_RATIO"]
 
     buy = sell = 0
-    uptrend = px > ma20 and ma5 > ma10 > ma20
-
     if use_levels:
         if px > S58 and prev <= S58 * 1.005 and vr >= VOL_BREAK:
             buy += 3
@@ -79,7 +133,6 @@ def vol_signals(history, use_levels, params):
             sell -= 2 if not uptrend else 1
         if hi >= R67 * 0.985 and px < R67 * 0.992 and vr >= VOL_BREAK:
             sell -= 3 if not uptrend else 1
-        # 破位需阴线确认，避免放量反弹日误杀
         if px < S58 * 0.993 and px < op and chg < 0 and vr >= VOL_PANIC and max(c[-20:]) >= S58 * 0.95:
             sell -= 3
         if px < S52 * 0.995 and px < op and chg < 0 and vr >= VOL_PANIC and max(c[-20:]) >= S52 * 0.95:
@@ -93,8 +146,8 @@ def vol_signals(history, use_levels, params):
         buy += 2
     if px > ma5 > ma10 > ma20 and 1.05 <= vr <= 1.7:
         buy += 1
-
-    # V型反转 / 动量加速
+    if params.get("ma20_pullback") and uptrend and lo <= ma20 * 1.015 and px > ma20 and px > op:
+        buy += params.get("ma20_pullback_score", 3)
     if params.get("recovery_buy"):
         ret5 = (px - c[-6]) / c[-6] if len(c) >= 6 and c[-6] else 0.0
         if prev < ma10 and px > ma10 and px > op and vr >= VOL_BREAK:
@@ -102,10 +155,7 @@ def vol_signals(history, use_levels, params):
         if ret5 >= params.get("momentum_ret5", 0.12) and px > ma5 and px > op:
             buy += params.get("momentum_buy_score", 3)
 
-    if params.get("ma20_pullback") and uptrend and lo <= ma20 * 1.015 and px > ma20 and px > op:
-        buy += params.get("ma20_pullback_score", 2)
-
-    if vr >= VOL_CLIMAX and upper >= SHADOW_RATIO:
+    if vr >= VOL_CLIMAX and upper >= params.get("SHADOW_RATIO", 0.5):
         sell -= 3 if not uptrend else 1
     if vr >= VOL_CLIMAX and px < op:
         sell -= 3 if not uptrend else 2
@@ -115,160 +165,258 @@ def vol_signals(history, use_levels, params):
         sell -= 2
     if px < ma20 and prev < ma20 and px < op and vr >= VOL_PANIC:
         sell -= 4
-    rsi_sell = params.get("rsi_sell", 78)
-    if rsi_v >= rsi_sell and vr >= VOL_STRONG:
-        sell -= 1 if not uptrend else 0
+    if rsi_v >= params.get("rsi_sell", 85) and vr >= VOL_STRONG and not uptrend:
+        sell -= 1
 
     return {
-        "buy": buy,
-        "sell": sell,
-        "px": px,
-        "ma5": ma5,
-        "ma10": ma10,
-        "ma20": ma20,
-        "vr": vr,
-        "uptrend": uptrend,
-        "rsi": rsi_v,
+        "buy": buy, "sell": sell, "px": px, "uptrend": uptrend,
+        "ma5": ma5, "ma10": ma10, "ma20": ma20, "vr": vr, "rsi": rsi_v,
+        "intraday": intraday, "upper": upper, "op": op, "lo": lo,
     }
 
 
-def merge_target(mb, ms, hold, params, uptrend=False):
-    # 强买时优先，避免被轻微卖信号压仓
+def merge_target_v8(mb, ms, params, uptrend):
     if mb >= 3 and ms > -4:
-        if uptrend:
-            return params.get("pos_max", 0.98), "趋势强买"
-        return params.get("pos_strong", 0.95), "强买"
-
-    if params.get("trend_hold") and uptrend and ms > params.get("trend_sell_floor", -4):
+        return (params.get("pos_max", 0.98) if uptrend else params.get("pos_strong", 0.95)), "强买"
+    if params.get("trend_hold") and uptrend and ms > params.get("trend_sell_floor", -5):
         if mb >= 1:
             return params.get("pos_max", 0.98), "趋势强持"
         if ms <= -1:
-            return max(params.get("trend_min_pos", 0.80), 0.80), "趋势减仓"
-        return params.get("trend_min_pos", 0.85), "趋势持有"
-
+            return max(params.get("trend_min_pos", 0.88), 0.88), "趋势减仓"
+        return params.get("trend_min_pos", 0.92), "趋势持有"
     if ms <= -8:
         return 0.0, "清仓"
     if ms <= -6:
-        return params.get("pos_heavy_cut", 0.35), "重度减仓"
+        return params.get("pos_heavy_cut", 0.40), "重度减仓"
     if ms <= -3:
-        return params.get("pos_light_cut", 0.65), "轻度减仓"
+        return params.get("pos_light_cut", 0.70), "轻度减仓"
     if mb >= 4:
         return params.get("pos_max", 0.98), "强买"
     if mb >= 2:
-        return 0.85, "买入加仓"
+        return 0.85, "买入"
     if mb >= 1:
-        return 0.80, "偏多持有"
+        return 0.80, "偏多"
     if mb + ms <= -2:
-        return 0.55, "偏空降仓"
+        return 0.55, "偏空"
     return None, "观望"
 
 
-def backtest(klines, params, start_idx=21):
-    cash = 1.0
-    shares = 0.0
-    r67_fail = 0
-    last_target = -1.0
-    rebal_min = params.get("REBAL_MIN", 0.08)
-    trades = []
+def hh_t_sleeve(hh_hist, jh_hist, t_sleeve):
+    sig = vol_signals(hh_hist, False, BASE_PARAMS)
+    if not sig:
+        return t_sleeve
+    score = 0
+    if sig["lo"] <= sig["ma5"] * 1.012 and sig["px"] > sig["op"] and sig["intraday"] > 0.004:
+        score += 2
+    if sig["lo"] <= sig["ma10"] * 1.012 and sig["px"] > sig["ma10"] and sig["px"] > sig["op"]:
+        score += 1
+    if sig["rsi"] <= 38 and sig["px"] > sig["op"]:
+        score += 2
+    if sig["upper"] >= 0.40 and sig["vr"] >= 1.55:
+        score -= 3
+    if sig["vr"] >= 1.90 and sig["px"] < sig["op"]:
+        score -= 2
+    if sig["rsi"] >= 78:
+        score -= 2
+    if len(hh_hist) >= 2 and len(jh_hist) >= 2:
+        hh_chg = (hh_hist[-1]["close"] - hh_hist[-2]["close"]) / hh_hist[-2]["close"]
+        jh_chg = (jh_hist[-1]["close"] - jh_hist[-2]["close"]) / jh_hist[-2]["close"]
+        if hh_chg < -0.01 and jh_chg > hh_chg + 0.005:
+            score += 1
+        if hh_chg > 0.02 and jh_chg < hh_chg - 0.01:
+            score -= 1
+    if score >= 3:
+        return T_MAX
+    if score >= 1:
+        return T_MID
+    if score <= -3:
+        return 0.0
+    if score <= -1:
+        return T_MID * 0.5
+    return t_sleeve
+
+
+def core_target_v9(mb, ms, uptrend, core_on, lb=0):
+    if ms <= -8:
+        return 0.0, False
+    if not core_on:
+        if mb >= 2 or lb >= 2:
+            return CORE_PCT, True
+        if mb >= 1 and uptrend:
+            return CORE_PCT, True
+        return 0.0, False
+    if ms <= -6 and not uptrend:
+        return 0.0, False
+    return CORE_PCT, True
+
+
+def max_drawdown(equity_curve):
+    peak = equity_curve[0]
+    mdd = 0.0
+    for v in equity_curve:
+        peak = max(peak, v)
+        dd = (peak - v) / peak if peak else 0
+        mdd = max(mdd, dd)
+    return mdd * 100
+
+
+BASE_PARAMS = {
+    "R67": 67.0, "R61": 61.0, "S58": 58.0, "S52": 52.0,
+    "VOL_BREAK": 1.30, "VOL_STRONG": 1.55, "VOL_CLIMAX": 1.90,
+    "VOL_PANIC": 1.45, "SHADOW_RATIO": 0.50,
+    "REBAL_MIN": 0.04, "r67_fail_need": 3, "r67_px_min": 62.0, "rsi_sell": 85,
+    "ma20_pullback": True, "ma20_pullback_score": 3,
+    "recovery_buy": True, "recovery_buy_score": 4,
+    "momentum_ret5": 0.12, "momentum_buy_score": 3,
+    "trend_hold": True, "trend_min_pos": 0.92, "trend_sell_floor": -5,
+    "pos_max": 0.98, "pos_strong": 0.95, "pos_light_cut": 0.70, "pos_heavy_cut": 0.40,
+}
+
+
+def backtest_v8(klines, params, start_idx=21):
+    cash, shares = 1.0, 0.0
+    r67_fail, last_target = 0, -1.0
+    rebal_min = params.get("REBAL_MIN", 0.04)
+    trades, equity = [], []
 
     for i in range(start_idx, len(klines)):
         hist = klines[: i + 1]
         sig = vol_signals(hist, True, params)
         if not sig:
             continue
-
-        px = sig["px"]
-        mb, ms = sig["buy"], sig["sell"]
-
-        recent = hist[-5:]
-        hi = max(b["high"] for b in recent)
+        px, mb, ms = sig["px"], sig["buy"], sig["sell"]
+        hi = max(b["high"] for b in hist[-5:])
         if hi >= params["R67"] * 0.985 and px < params["R67"] * 0.995:
             r67_fail += 1
         else:
             r67_fail = max(0, r67_fail - 1)
-
-        r67_need = params.get("r67_fail_need", 2)
-        r67_px_min = params.get("r67_px_min", 59.0)
-        if r67_fail >= r67_need and px >= r67_px_min:
+        if r67_fail >= params.get("r67_fail_need", 3) and px >= params.get("r67_px_min", 62):
             ms -= 2 if not sig["uptrend"] else 1
 
-        hold = shares
         total = cash + shares * px
         pos_pct = (shares * px / total) if total > 0 else 0.0
-
-        tgt, action = merge_target(mb, ms, hold, params, sig["uptrend"])
+        tgt, action = merge_target_v8(mb, ms, params, sig["uptrend"])
+        equity.append(total)
         if tgt is None:
             continue
-
-        if abs(pos_pct - tgt) < rebal_min and hold > 0:
+        if abs(pos_pct - tgt) < rebal_min and shares > 0:
             continue
-        if tgt == 0.0 and hold == 0:
+        if tgt == 0 and shares == 0:
             continue
-        if not (abs(last_target - tgt) >= rebal_min or (tgt == 0 and hold > 0) or (tgt > 0 and hold == 0)):
+        if not (abs(last_target - tgt) >= rebal_min or (tgt == 0 and shares > 0) or (tgt > 0 and shares == 0)):
             continue
-
-        target_value = total * tgt
-        target_shares = target_value / px
-        delta = target_shares - shares
-        if abs(delta) * px / total < 0.01:
-            continue
-
-        shares = target_shares
+        shares = total * tgt / px
         cash = total - shares * px
         last_target = tgt
-        trades.append({"date": klines[i]["date"], "px": px, "tgt": tgt, "action": action, "mb": mb, "ms": ms})
+        trades.append({"date": klines[i]["date"], "px": px, "tgt": tgt, "action": action})
 
     final = cash + shares * klines[-1]["close"]
-    ret = (final - 1.0) * 100
-    return ret, trades, shares > 0
+    equity.append(final)
+    return (final - 1) * 100, trades, max_drawdown(equity)
+
+
+def backtest_v9(jh, hh, params, start_idx=21):
+    cash, shares = 1.0, 0.0
+    r67_fail, last_target = 0, -1.0
+    core_on, t_sleeve = False, T_MID
+    rebal_min = params.get("REBAL_MIN", 0.04)
+    trades, equity = [], []
+
+    for i in range(start_idx, len(jh)):
+        jh_hist, hh_hist = jh[: i + 1], hh[: i + 1]
+        sig = vol_signals(jh_hist, True, params)
+        if not sig:
+            continue
+        px, mb, ms = sig["px"], sig["buy"], sig["sell"]
+        hi = max(b["high"] for b in jh_hist[-5:])
+        if hi >= params["R67"] * 0.985 and px < params["R67"] * 0.995:
+            r67_fail += 1
+        else:
+            r67_fail = max(0, r67_fail - 1)
+        if r67_fail >= 3 and px >= 62:
+            ms -= 2 if not sig["uptrend"] else 1
+
+        core_tgt, core_on = core_target_v9(mb, ms, sig["uptrend"], core_on)
+        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve)
+        tgt = 0.0 if core_tgt <= 0 else min(core_tgt + t_sleeve, 1.0)
+        action = "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
+
+        total = cash + shares * px
+        pos_pct = (shares * px / total) if total > 0 else 0.0
+        equity.append(total)
+        if abs(pos_pct - tgt) < rebal_min and shares > 0:
+            continue
+        if tgt == 0 and shares == 0:
+            continue
+        if not (abs(last_target - tgt) >= rebal_min or (tgt == 0 and shares > 0) or (tgt > 0 and shares == 0)):
+            continue
+        shares = total * tgt / px
+        cash = total - shares * px
+        last_target = tgt
+        trades.append({"date": jh[i]["date"], "px": px, "tgt": tgt, "core": core_tgt, "t": t_sleeve, "action": action})
+
+    final = cash + shares * jh[-1]["close"]
+    equity.append(final)
+    return (final - 1) * 100, trades, max_drawdown(equity)
+
+
+def slice_year(klines, days=252):
+    if len(klines) <= days:
+        return klines, 21
+    return klines[-days:], 21
 
 
 def main():
-    klines = load_klines()
-    bh = (klines[-1]["close"] / klines[21]["close"] - 1) * 100
+    parser = argparse.ArgumentParser(description="晶合688249 本地回测")
+    parser.add_argument("--days", type=int, default=252, help="回测交易日数(默认252≈1年)")
+    parser.add_argument("--online", action="store_true", help="在线拉取东财数据")
+    args = parser.parse_args()
 
-    base_params = {
-        "R67": 67.0, "R61": 61.0, "S58": 58.0, "S52": 52.0,
-        "VOL_BREAK": 1.30, "VOL_STRONG": 1.55, "VOL_CLIMAX": 1.90,
-        "VOL_PANIC": 1.45, "SHADOW_RATIO": 0.50,
-        "REBAL_MIN": 0.08, "r67_fail_need": 2, "r67_px_min": 59.0,
-        "rsi_sell": 78,
-    }
+    if args.online:
+        jh_raw, hh_raw, src = fetch_online(days=max(args.days + 30, 280))
+        jh, hh = align_klines(jh_raw, hh_raw)
+    else:
+        cache_jh = os.path.join("data", "688249_daily_sina.json")
+        cache_hh = os.path.join("data", "688347_daily.json")
+        if os.path.isfile(cache_jh) and os.path.isfile(cache_hh):
+            with open(cache_jh, encoding="utf-8") as f:
+                jh_raw = json.load(f)["klines"]
+            with open(cache_hh, encoding="utf-8") as f:
+                hh_raw = json.load(f)["klines"]
+            src = "cache"
+        else:
+            jh_raw, hh_raw, src = fetch_online(days=max(args.days + 30, 280))
+        jh, hh = align_klines(jh_raw, hh_raw)
 
-    v8_params = copy.deepcopy(base_params)
-    v8_params.update({
-        "REBAL_MIN": 0.05,
-        "r67_fail_need": 3,
-        "r67_px_min": 62.0,
-        "rsi_sell": 85,
-        "ma20_pullback": True,
-        "ma20_pullback_score": 3,
-        "recovery_buy": True,
-        "recovery_buy_score": 4,
-        "momentum_ret5": 0.12,
-        "momentum_buy_score": 3,
-        "trend_hold": True,
-        "trend_min_pos": 0.88,
-        "trend_sell_floor": -5,
-        "pos_max": 0.98,
-        "pos_strong": 0.95,
-        "pos_light_cut": 0.70,
-        "pos_heavy_cut": 0.40,
-    })
+    jh, start = slice_year(jh, args.days)
+    hh = hh[-len(jh):]
 
-    r1, t1, _ = backtest(klines, base_params)
-    r2, t2, _ = backtest(klines, v8_params)
+    start_px = jh[start]["close"]
+    end_px = jh[-1]["close"]
+    bh = (end_px / start_px - 1) * 100
 
-    print(f"区间: {klines[21]['date']} -> {klines[-1]['date']}")
-    print(f"买入持有: {bh:.1f}%")
-    print(f"v7.2 模拟: {r1:.1f}%  交易 {len(t1)} 笔")
-    print(f"v8.0 模拟: {r2:.1f}%  交易 {len(t2)} 笔")
-    print("\n--- v7.2 末5笔 ---")
-    for t in t1[-5:]:
-        print(t)
-    print("\n--- v8.0 末5笔 ---")
-    for t in t2[-5:]:
-        print(t)
+    v8_params = copy.deepcopy(BASE_PARAMS)
+    r8, t8, mdd8 = backtest_v8(jh, v8_params, start)
+    r9, t9, mdd9 = backtest_v9(jh, hh, v8_params, start)
+
+    print("=" * 60)
+    print("  晶合688249 回测报告 (约 {} 个交易日)".format(len(jh) - start))
+    print("  数据源: {}".format(src))
+    print("  区间: {} ({:.2f}) -> {} ({:.2f})".format(
+        jh[start]["date"], start_px, jh[-1]["date"], end_px))
+    print("  股价涨幅: {:+.1f}%".format(bh))
+    print("=" * 60)
+    print("")
+    print("{:<16} {:>10} {:>10} {:>8}".format("策略", "收益率", "最大回撤", "交易笔数"))
+    print("-" * 48)
+    print("{:<16} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
+    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
+    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.0 75%+25%T", r9, mdd9, len(t9)))
+    print("")
+    print("--- v9 末5笔 ---")
+    for t in t9[-5:]:
+        print("  {} px={:.2f} 总={:.0%} ({})".format(t["date"], t["px"], t["tgt"], t["action"]))
+    print("=" * 60)
 
 
 if __name__ == "__main__":
