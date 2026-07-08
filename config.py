@@ -20,16 +20,17 @@ BENCHMARK = {
     "secid": "1.688347",
 }
 
-# T仓阈值 (v9.1 放宽减仓)
+# T仓阈值 (v9.2 趋势锁满 + 震荡做T)
 T_THRESHOLDS = {
-    "buy_score_full": 3,      # T加满
-    "buy_score_mid": 1,       # T半仓
-    "sell_score_clear": -6,   # T清空 (需多重强卖确认)
-    "sell_score_cut": -4,     # 减至半T (原减至¼)
-    "t_min_pct": 0.125,       # T仓下限，弱卖信号不减到此以下
+    "buy_score_full": 3,
+    "buy_score_mid": 1,
+    "sell_score_clear": -6,
+    "sell_score_cut": -4,
+    "t_min_pct": 0.125,
     "rsi_sell": 85,
     "upper_shadow": 0.50,
     "vr_sell_strong": 1.90,
+    "rebal_min": 0.02,          # 调仓灵敏度
 }
 
 # 关键价位（可根据策略调整）

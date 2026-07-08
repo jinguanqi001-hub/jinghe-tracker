@@ -9,7 +9,7 @@ import os
 
 from config import POSITION
 from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
-from t_logic import score_hh_t_signals, t_pct_from_score
+from t_logic import score_hh_t_signals, t_pct_from_score, is_bull_mode, core_should_exit, core_should_enter
 
 
 CORE_PCT = POSITION["core_pct"]
@@ -202,7 +202,9 @@ def merge_target_v8(mb, ms, params, uptrend):
     return None, "观望"
 
 
-def hh_t_sleeve(hh_hist, jh_hist, t_sleeve):
+def hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=False):
+    if bull_lock:
+        return T_MAX
     sig = vol_signals(hh_hist, False, BASE_PARAMS)
     if not sig:
         return t_sleeve
@@ -216,20 +218,19 @@ def hh_t_sleeve(hh_hist, jh_hist, t_sleeve):
         sig["ma5"], sig["ma10"], sig["rsi"], sig["intraday"],
         sig["upper"], sig["vr"], hh_chg, jh_chg,
     )
-    t_pct, _ = t_pct_from_score(score, T_MAX, T_MID, prev_t=t_sleeve)
+    t_pct, _ = t_pct_from_score(score, T_MAX, T_MID, prev_t=t_sleeve, bull_lock=False)
     return t_pct
 
 
-def core_target_v9(mb, ms, uptrend, core_on, lb=0):
-    if ms <= -8:
+def core_target_v9(mb, ms, sig, core_on, lb=0, fast_entry=False):
+    """v9.2 底仓：快入慢出"""
+    if core_should_exit(ms, sig):
         return 0.0, False
     if not core_on:
-        if mb >= 2 or lb >= 2:
+        if fast_entry and sig.get("px", 0) > sig.get("ma20", 0) * 0.95:
             return CORE_PCT, True
-        if mb >= 1 and uptrend:
+        if core_should_enter(mb, sig) or lb >= 2:
             return CORE_PCT, True
-        return 0.0, False
-    if ms <= -6 and not uptrend:
         return 0.0, False
     return CORE_PCT, True
 
@@ -302,8 +303,8 @@ def backtest_v8(klines, params, start_idx=21):
 def backtest_v9(jh, hh, params, start_idx=21):
     cash, shares = 1.0, 0.0
     r67_fail, last_target = 0, -1.0
-    core_on, t_sleeve = False, T_MID
-    rebal_min = params.get("REBAL_MIN", 0.04)
+    core_on, t_sleeve = False, T_MAX
+    rebal_min = params.get("REBAL_MIN", 0.02)
     trades, equity = [], []
 
     for i in range(start_idx, len(jh)):
@@ -320,12 +321,18 @@ def backtest_v9(jh, hh, params, start_idx=21):
         if r67_fail >= 3 and px >= 62:
             ms -= 2 if not sig["uptrend"] else 1
 
-        core_tgt, core_on = core_target_v9(mb, ms, sig["uptrend"], core_on)
-        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve)
-        if core_tgt > 0:
-            t_sleeve = max(t_sleeve, T_MID)  # 底仓在时T永不低于12.5%
-        tgt = 0.0 if core_tgt <= 0 else min(core_tgt + t_sleeve, 1.0)
-        action = "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
+        bull = is_bull_mode(sig, mb)
+        core_tgt, core_on = core_target_v9(mb, ms, sig, core_on, fast_entry=(i == start_idx))
+        t_sleeve = hh_t_sleeve(hh_hist, jh_hist, t_sleeve, bull_lock=bull and core_on)
+        if core_tgt <= 0:
+            tgt = 0.0
+        elif bull:
+            tgt = 1.0
+        else:
+            tgt = min(core_tgt + max(t_sleeve, T_MID), 1.0)
+        if i == start_idx and core_tgt > 0:
+            tgt = 1.0
+        action = "趋势锁满" if bull and core_tgt > 0 else "底{:.0%}+T{:.0%}".format(core_tgt, t_sleeve)
 
         total = cash + shares * px
         pos_pct = (shares * px / total) if total > 0 else 0.0
@@ -397,7 +404,7 @@ def main():
     print("-" * 48)
     print("{:<16} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
     print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
-    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.1 75%+25%T", r9, mdd9, len(t9)))
+    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.2 75%+25%T", r9, mdd9, len(t9)))
     print("")
     print("--- v9 末5笔 ---")
     for t in t9[-5:]:

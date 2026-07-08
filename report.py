@@ -84,6 +84,8 @@ def render_t_trading(t_result):
         t_result.get("t_action", ""),
         t_result.get("total_pct", 0),
     ))
+    if t_result.get("bull_lock"):
+        lines.append("  🔒 趋势锁满 — 75%底仓+25%T = 100%")
     for s in t_result.get("signals") or []:
         icon = LEVEL_ICON.get(s["level"], "⚪")
         lines.append("  {} {} → {}".format(icon, s["message"], s["action"]))
