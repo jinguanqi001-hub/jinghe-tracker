@@ -9,7 +9,8 @@ import os
 
 from config import POSITION
 from data_fetcher import _eastmoney_klines, fetch_benchmark_klines
-from t_logic import score_hh_t_signals, t_pct_from_score, is_bull_mode, core_should_exit, core_should_enter
+from intraday_t_logic import score_intraday_hh, t_pct_from_intraday_score
+from t_logic import score_hh_t_signals, t_pct_from_score, core_should_exit, core_should_enter
 
 
 CORE_PCT = POSITION["core_pct"]
@@ -348,6 +349,148 @@ def backtest_v9(jh, hh, params, start_idx=21):
     return (final - 1) * 100, trades, max_drawdown(equity)
 
 
+def _ohlc_path(bar):
+    """日K → 日内价格路径 (模拟 tick)"""
+    op, hi, lo, cl = bar["open"], bar["high"], bar["low"], bar["close"]
+    if cl >= op:
+        anchors = [op, lo, lo + (hi - lo) * 0.35, hi, hi - (hi - cl) * 0.4, cl]
+    else:
+        anchors = [op, hi, hi - (hi - lo) * 0.35, lo, lo + (cl - lo) * 0.4, cl]
+    out = []
+    steps = 8
+    for i in range(steps):
+        t = i / (steps - 1)
+        seg = t * (len(anchors) - 1)
+        j = min(int(seg), len(anchors) - 2)
+        frac = seg - j
+        px = anchors[j] * (1 - frac) + anchors[j + 1] * frac
+        hhmm = 930 + int(t * 330)  # 约 9:30 → 14:30
+        if hhmm > 1130 and hhmm < 1300:
+            hhmm += 90
+        out.append({"time": "{:04d}".format(min(hhmm, 1500)), "price": px})
+    return out
+
+
+def _intraday_from_ticks(ticks, pre_close):
+    """由 tick 路径构造 intraday_t_logic 所需字段"""
+    prices = [t["price"] for t in ticks]
+    px = prices[-1]
+    op = prices[0]
+    hi, lo = max(prices), min(prices)
+    prev = prices[-2] if len(prices) >= 2 else px
+    vwap = sum(prices) / len(prices)
+    return {
+        "price": px,
+        "open": op,
+        "high": hi,
+        "low": lo,
+        "pre_close": pre_close,
+        "vwap": vwap,
+        "prev_price": prev,
+        "intraday_pct": (px - op) / op if op else 0.0,
+        "pullback_from_high": (hi - px) / hi if hi else 0.0,
+        "bounce_from_low": (px - lo) / lo if lo else 0.0,
+        "ticks": [{"time": t["time"], "price": t["price"]} for t in ticks],
+        "last_time": ticks[-1]["time"],
+        "change_pct": (px - pre_close) / pre_close * 100 if pre_close else 0.0,
+    }
+
+
+def backtest_v10(jh, hh, params, start_idx=21):
+    """v10 日内T：日K模拟分时路径 + 华虹分钟评分"""
+    cash, shares = 1.0, 0.0
+    r67_fail, last_target = 0, -1.0
+    core_on, t_sleeve = False, T_MAX
+    rebal_min = params.get("REBAL_MIN", 0.015)
+    min_tick_gap = 2
+    trades, equity = [], []
+
+    for i in range(start_idx, len(jh)):
+        jh_hist, hh_hist = jh[: i + 1], hh[: i + 1]
+        sig = vol_signals(jh_hist, True, params)
+        if not sig:
+            continue
+
+        px_day, mb, ms = sig["px"], sig["buy"], sig["sell"]
+        hi = max(b["high"] for b in jh_hist[-5:])
+        if hi >= params["R67"] * 0.985 and px_day < params["R67"] * 0.995:
+            r67_fail += 1
+        else:
+            r67_fail = max(0, r67_fail - 1)
+        if r67_fail >= 3 and px_day >= 62:
+            ms -= 2 if not sig["uptrend"] else 1
+
+        core_tgt, core_on = core_target_v9(mb, ms, sig, core_on, fast_entry=(i == start_idx))
+        if core_tgt <= 0:
+            t_sleeve = T_MAX
+
+        jh_pre = jh_hist[-2]["close"] if len(jh_hist) >= 2 else jh_hist[-1]["open"]
+        hh_pre = hh_hist[-2]["close"] if len(hh_hist) >= 2 else hh_hist[-1]["open"]
+        jh_path = _ohlc_path(jh_hist[-1])
+        hh_path = _ohlc_path(hh_hist[-1])
+
+        last_t_change = -999
+        day_trades = 0
+
+        for k in range(len(jh_path)):
+            jh_ticks = jh_path[: k + 1]
+            hh_ticks = hh_path[: k + 1]
+            jh_state = _intraday_from_ticks(jh_ticks, jh_pre)
+            hh_state = _intraday_from_ticks(hh_ticks, hh_pre)
+
+            score, _, _ = score_intraday_hh(hh_state, jh_state)
+            new_t, t_act = t_pct_from_intraday_score(score, prev_t=t_sleeve, last_time=hh_state["last_time"])
+
+            if i == start_idx and k == 0:
+                tgt = 1.0
+                action = "首日满仓"
+            elif core_tgt <= 0:
+                tgt, action = 0.0, "空仓"
+            else:
+                tgt = min(core_tgt + new_t, 1.0)
+                action = "底{:.0%}+T{:.0%}".format(core_tgt, new_t)
+
+            px = jh_state["price"]
+            total = cash + shares * px
+            pos_pct = (shares * px / total) if total > 0 else 0.0
+
+            t_changed = new_t != t_sleeve and (k - last_t_change) >= min_tick_gap
+            if t_changed:
+                t_sleeve = new_t
+                last_t_change = k
+
+            if abs(pos_pct - tgt) < rebal_min and shares > 0:
+                continue
+            if tgt == 0 and shares == 0:
+                continue
+            if not (abs(last_target - tgt) >= rebal_min or (tgt == 0 and shares > 0) or (tgt > 0 and shares == 0)):
+                continue
+
+            shares = total * tgt / px
+            cash = total - shares * px
+            last_target = tgt
+            day_trades += 1
+            trades.append({
+                "date": jh[i]["date"],
+                "time": hh_state["last_time"],
+                "px": px,
+                "tgt": tgt,
+                "core": core_tgt,
+                "t": t_sleeve,
+                "action": action,
+                "score": score,
+            })
+
+        close_px = jh_hist[-1]["close"]
+        total = cash + shares * close_px
+        equity.append(total)
+
+    final = cash + shares * jh[-1]["close"]
+    if not equity or equity[-1] != final:
+        equity.append(final)
+    return (final - 1) * 100, trades, max_drawdown(equity)
+
+
 def slice_year(klines, days=252):
     if len(klines) <= days:
         return klines, 21
@@ -386,6 +529,7 @@ def main():
     v8_params = copy.deepcopy(BASE_PARAMS)
     r8, t8, mdd8 = backtest_v8(jh, v8_params, start)
     r9, t9, mdd9 = backtest_v9(jh, hh, v8_params, start)
+    r10, t10, mdd10 = backtest_v10(jh, hh, v8_params, start)
 
     print("=" * 60)
     print("  晶合688249 回测报告 (约 {} 个交易日)".format(len(jh) - start))
@@ -395,13 +539,21 @@ def main():
     print("  股价涨幅: {:+.1f}%".format(bh))
     print("=" * 60)
     print("")
-    print("{:<16} {:>10} {:>10} {:>8}".format("策略", "收益率", "最大回撤", "交易笔数"))
-    print("-" * 48)
-    print("{:<16} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
-    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
-    print("{:<16} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 75%+25%T", r9, mdd9, len(t9)))
+    print("{:<20} {:>10} {:>10} {:>8}".format("策略", "收益率", "最大回撤", "交易笔数"))
+    print("-" * 52)
+    print("{:<20} {:>9.1f}% {:>10} {:>8}".format("买入持有", bh, "-", 0))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v8.0 趋势", r8, mdd8, len(t8)))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v9.3 日线T(近似)", r9, mdd9, len(t9)))
+    print("{:<20} {:>9.1f}% {:>9.1f}% {:>8}".format("v10 日内T(模拟)", r10, mdd10, len(t10)))
     print("")
-    print("--- v9 末5笔 ---")
+    print("  v10 说明: 用日K OHLC 模拟分时路径，非真实分钟数据")
+    print("")
+    print("--- v10 末8笔 ---")
+    for t in t10[-8:]:
+        print("  {} {} px={:.2f} 总={:.0%} score={} ({})".format(
+            t["date"], t.get("time", ""), t["px"], t["tgt"], t.get("score", ""), t["action"]))
+    print("")
+    print("--- v9.3 末5笔 ---")
     for t in t9[-5:]:
         print("  {} px={:.2f} 总={:.0%} ({})".format(t["date"], t["px"], t["tgt"], t["action"]))
     print("=" * 60)
