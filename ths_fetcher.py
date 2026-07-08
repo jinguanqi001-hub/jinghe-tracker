@@ -7,7 +7,7 @@ import ssl
 import urllib.request
 from datetime import datetime
 
-from ths_config import THS_CODE, THS_PUBLIC
+from ths_config import THS_BENCHMARK_CODE, THS_CODE, THS_PUBLIC
 
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
@@ -77,62 +77,105 @@ def fetch_daily_klines(days=120):
     return rows
 
 
-def fetch_realtime():
-    """从同花顺分时接口获取最新价"""
-    url = THS_PUBLIC["intraday_url"].format(code=THS_CODE)
+def _parse_ticks(raw_data):
+    """解析同花顺分时 tick 串 → [{time, price, amount, vwap, volume}, ...]"""
+    ticks = []
+    for seg in (raw_data or "").split(";"):
+        if not seg.strip():
+            continue
+        p = seg.split(",")
+        if len(p) < 5:
+            continue
+        ticks.append(
+            {
+                "time": p[0],
+                "price": float(p[1]),
+                "amount": float(p[2]),
+                "vwap": float(p[3]),
+                "volume": int(float(p[4])),
+            }
+        )
+    return ticks
+
+
+def fetch_intraday(code=None):
+    """拉取同花顺分时 tick（晶合/华虹通用）"""
+    code = code or THS_CODE
+    url = THS_PUBLIC["intraday_url"].format(code=code)
     payload = _parse_jsonp(_fetch_text(url))
-    block = payload.get(THS_CODE) or (payload[list(payload.keys())[0]] if payload else {})
+    block = payload.get(code) or (payload[list(payload.keys())[0]] if payload else {})
     if not block:
-        raise RuntimeError("同花顺分时数据为空")
+        raise RuntimeError("同花顺分时数据为空: {}".format(code))
 
     pre_close = float(block.get("pre") or 0)
-    name = block.get("name", "")
-    ticks = [t for t in (block.get("data") or "").split(";") if t.strip()]
+    ticks = _parse_ticks(block.get("data"))
+    if not ticks:
+        raise RuntimeError("同花顺分时 tick 为空: {}".format(code))
 
-    price = open_px = high = low = None
-    volume = amount = 0
-    if ticks:
-        last = ticks[-1].split(",")
-        if len(last) >= 5:
-            price = float(last[1])
-            amount = float(last[2])
-            volume = int(float(last[4]))
-        first = ticks[0].split(",")
-        open_px = float(first[1]) if len(first) >= 2 else price
-        prices = [float(t.split(",")[1]) for t in ticks if len(t.split(",")) >= 2]
-        if prices:
-            high = max(prices)
-            low = min(prices)
+    prices = [t["price"] for t in ticks]
+    px = prices[-1]
+    open_px = prices[0]
+    hi = max(prices)
+    lo = min(prices)
+    vwap = ticks[-1]["vwap"]
+    prev_px = prices[-2] if len(prices) >= 2 else px
 
-    if price is None:
-        raise RuntimeError("无法解析同花顺实时价")
-
-    change_pct = ((price - pre_close) / pre_close * 100) if pre_close else 0.0
     date_raw = block.get("date", "")
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if len(date_raw) == 8:
         ts = "{}-{}-{} {}".format(
-            date_raw[:4], date_raw[4:6], date_raw[6:8], datetime.now().strftime("%H:%M:%S")
+            date_raw[:4], date_raw[4:6], date_raw[6:8], ticks[-1]["time"][:2] + ":" + ticks[-1]["time"][2:4]
         )
 
-    klines = fetch_daily_klines(days=1)
-    turnover = klines[-1]["turnover_pct"] if klines else None
-
     return {
-        "code": "688249",
-        "name": name,
-        "price": price,
-        "open": open_px or price,
-        "high": high or price,
-        "low": low or price,
+        "code": code.replace("hs_", ""),
+        "name": block.get("name", ""),
+        "price": px,
+        "open": open_px,
+        "high": hi,
+        "low": lo,
         "pre_close": pre_close,
-        "volume": volume,
-        "amount": amount,
-        "turnover_pct": turnover,
-        "change_pct": round(change_pct, 2),
+        "vwap": vwap,
+        "prev_price": prev_px,
+        "volume": ticks[-1]["volume"],
+        "amount": ticks[-1]["amount"],
+        "change_pct": round((px - pre_close) / pre_close * 100, 2) if pre_close else 0.0,
+        "intraday_pct": round((px - open_px) / open_px, 4) if open_px else 0.0,
+        "pullback_from_high": round((hi - px) / hi, 4) if hi else 0.0,
+        "bounce_from_low": round((px - lo) / lo, 4) if lo else 0.0,
+        "ticks": ticks,
+        "tick_count": len(ticks),
+        "last_time": ticks[-1]["time"],
         "source": "ths",
         "timestamp": ts,
     }
+
+
+def fetch_realtime():
+    """从同花顺分时接口获取晶合最新价"""
+    intraday = fetch_intraday(THS_CODE)
+    klines = fetch_daily_klines(days=1)
+    turnover = klines[-1]["turnover_pct"] if klines else None
+    return {
+        "code": "688249",
+        "name": intraday.get("name", ""),
+        "price": intraday["price"],
+        "open": intraday["open"],
+        "high": intraday["high"],
+        "low": intraday["low"],
+        "pre_close": intraday["pre_close"],
+        "volume": intraday["volume"],
+        "amount": intraday["amount"],
+        "turnover_pct": turnover,
+        "change_pct": intraday["change_pct"],
+        "source": "ths",
+        "timestamp": intraday["timestamp"],
+    }
+
+
+def fetch_benchmark_intraday():
+    """华虹公司分时 tick — T仓基准"""
+    return fetch_intraday(THS_BENCHMARK_CODE)
 
 
 def stock_page_url():

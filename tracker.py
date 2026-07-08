@@ -10,7 +10,8 @@
   python3 tracker.py --open-iwencai     # 浏览器打开问财
   python3 tracker.py --source ths       # 指定主数据源
   python3 tracker.py --no-compare       # 关闭双源对比
-  python3 tracker.py --json
+  python3 tracker.py --intraday-t      # 日内T (华虹分钟基准)
+  python3 tracker.py --intraday-t --watch 60
 """
 
 import argparse
@@ -38,6 +39,18 @@ from source_compare import run_full_compare
 from t_signals import evaluate_t_trading
 
 
+def evaluate_intraday_t_trading():
+    """日内T — 华虹分钟 tick 基准"""
+    try:
+        from ths_fetcher import fetch_benchmark_intraday, fetch_intraday
+        from intraday_t_logic import evaluate_intraday_t
+        hh = fetch_benchmark_intraday()
+        jh = fetch_intraday()
+        return evaluate_intraday_t(hh, jh)
+    except Exception as e:
+        return {"error": str(e), "mode": "intraday"}
+
+
 def log_alert(message):
     os.makedirs(os.path.dirname(ALERT_LOG) or ".", exist_ok=True)
     line = "[{}] {}\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), message)
@@ -45,7 +58,7 @@ def log_alert(message):
         f.write(line)
 
 
-def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=False, iwencai_preset="fundamental", snapshot=True, t_trading=True):
+def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=False, iwencai_preset="fundamental", snapshot=True, t_trading=True, intraday_t=False):
     klines = None
     realtime = None
     src_label = get_source_label(source)
@@ -101,7 +114,11 @@ def run_once(offline=False, as_json=False, source=None, compare=True, iwencai=Fa
 
     indicators = compute_all(klines)
     evaluation = evaluate(klines, indicators, realtime)
-    t_result = evaluate_t_trading(klines, realtime) if t_trading and not offline else None
+    t_result = None
+    if intraday_t and not offline:
+        t_result = evaluate_intraday_t_trading()
+    elif t_trading and not offline:
+        t_result = evaluate_t_trading(klines, realtime)
 
     for s in evaluation["signals"]:
         if s["level"] in ("SELL", "WARN"):
@@ -175,6 +192,7 @@ def main():
     parser.add_argument("--open-iwencai", action="store_true", help="浏览器打开问财")
     parser.add_argument("--no-snapshot", action="store_true", help="不写入每日快照 CSV")
     parser.add_argument("--no-t", action="store_true", help="不显示华虹做T建议")
+    parser.add_argument("--intraday-t", action="store_true", help="日内T模式(华虹分钟基准，替代日线T)")
     args = parser.parse_args()
 
     if args.open_ths:
@@ -189,7 +207,8 @@ def main():
 
     compare = not args.no_compare
     snapshot = not args.no_snapshot
-    t_trading = not args.no_t
+    t_trading = not args.no_t and not args.intraday_t
+    intraday_t = args.intraday_t
 
     if args.watch:
         interval = max(60, args.watch)
@@ -206,6 +225,7 @@ def main():
                     iwencai_preset=args.iwencai_preset,
                     snapshot=snapshot,
                     t_trading=t_trading,
+                    intraday_t=intraday_t,
                 )
                 if prev_verdict and ev["verdict"] != prev_verdict:
                     msg = "研判变化: {} → {}".format(prev_verdict, ev["verdict"])
@@ -231,6 +251,7 @@ def main():
             iwencai_preset=args.iwencai_preset,
             snapshot=snapshot,
             t_trading=t_trading,
+            intraday_t=intraday_t,
         )
 
 

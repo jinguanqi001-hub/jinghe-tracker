@@ -50,7 +50,33 @@
       "problemMatcher": []
     },
     {
-      "label": "晶合688249 · JSON 输出",
+      "label": "晶合688249 · 日内T (1分钟)",
+      "type": "shell",
+      "command": "python3 intraday_t.py --watch 60",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "晶合688249 · 日内T (单次)",
+      "type": "shell",
+      "command": "python3 intraday_t.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
       "type": "shell",
       "command": "python3 tracker.py --json",
       "options": {

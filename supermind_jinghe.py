@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-晶合688249 SuperMind v9.3 — 75%底仓 + 25%华虹大波段做T
-- 底仓(75%): v8趋势逻辑，仅在强卖/清仓信号时变动
-- T仓(25%): 以华虹公司(688347)为基准，日内波段加减
-- 日线回测用华虹OHLC近似日内T；实盘建议切换分钟频率
+晶合688249 SuperMind
+- v9.3 SOURCE_CODE: 75%底仓 + 25%华虹大波段做T (日线频率，T为OHLC近似)
+- v10 INTRADAY_SOURCE_CODE: 75%底仓 + 25%华虹日内T (MINUTE频率，分钟级华虹信号)
 """
 
 SOURCE_CODE = r'''
@@ -336,4 +335,204 @@ def handle_bar(context, bar_dict):
         order_target_percent(g.stock, tgt)
         g.last_target = tgt
         log.info('调仓 -> {:.0%} (底{:.0%}+T{:.0%})'.format(tgt, core_tgt, t_tgt))
+'''
+
+# ===== v10 日内T — SuperMind 分钟频率 =====
+# 用法: research_strategy(INTRADAY_SOURCE_CODE, frequency='MINUTE', ...)
+# 底仓75%仍用日线趋势；T仓25%用华虹分钟级信号 0↔25%
+INTRADAY_SOURCE_CODE = r'''
+# ===== 晶合688249 v10: 75%底仓 + 25%华虹日内T (分钟级) =====
+STOCK = '688249.SH'
+BENCHMARK = '688347.SH'
+
+CORE_PCT = 0.75
+T_MAX = 0.25
+T_MID = 0.125
+REBAL_MIN = 0.015
+MIN_TRADE_GAP = 5          # 分钟，T仓最短调仓间隔
+
+# 日内T阈值
+PULLBACK_BUY = 0.012
+BOUNCE_BUY = 0.004
+SPIKE_SELL = 0.018
+DROP_SELL = 0.008
+RSI_OS = 38
+RSI_OB = 68
+REL_GAP = 0.005
+
+
+def init(context):
+    g.stock = STOCK
+    context.security = STOCK
+    g.core_on = True
+    g.t_sleeve = T_MAX
+    g.last_t_bar = -999
+    g.last_core_day = None
+    log.info('晶合 v10 75%%底仓+25%%华虹日内T (MINUTE) init')
+
+
+def _rsi(closes, n=14):
+    if len(closes) < n + 1:
+        return 50.0
+    gs, ls = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gs.append(max(d, 0))
+        ls.append(max(-d, 0))
+    ag = sum(gs[-n:]) / n
+    al = sum(ls[-n:]) / n
+    if al == 0:
+        return 100.0
+    return 100 - 100 / (1 + ag / al)
+
+
+def _daily_core(context):
+    """底仓：日线趋势，每日开盘更新一次"""
+    dt = get_datetime()
+    day_key = dt.strftime('%Y%m%d') if dt else ''
+    if g.last_core_day == day_key:
+        return CORE_PCT if g.core_on else 0.0
+
+    df = history(g.stock, ['open', 'high', 'low', 'close', 'volume'], 25, '1d', False, 'pre', True)
+    if df is None or len(df) < 20:
+        g.last_core_day = day_key
+        return CORE_PCT if g.core_on else 0.0
+
+    c = list(df['close'])
+    px = c[-1]
+    ma20 = sum(c[-20:]) / 20
+    ma5 = sum(c[-5:]) / 5
+    ma10 = sum(c[-10:]) / 10
+    uptrend = px > ma20 and ma5 > ma10 > ma20
+
+    if not g.core_on and (uptrend or px > ma20):
+        g.core_on = True
+    if g.core_on and px < ma20 * 0.97 and px < list(df['open'])[-1]:
+        g.core_on = False
+
+    g.last_core_day = day_key
+    return CORE_PCT if g.core_on else 0.0
+
+
+def _intraday_stats(symbol, n=60):
+    """当日分钟线统计"""
+    df = history(symbol, ['open', 'high', 'low', 'close', 'volume'], n, '1m', False, 'pre', True)
+    if df is None or len(df) < 3:
+        return None
+    o = list(df['open'])
+    h = list(df['high'])
+    l = list(df['low'])
+    c = list(df['close'])
+    px = c[-1]
+    prev = c[-2]
+    op = o[0]
+    hi = max(h)
+    lo = min(l)
+    vwap = sum(c) / len(c)
+    pullback = (hi - px) / hi if hi else 0.0
+    bounce = (px - lo) / lo if lo else 0.0
+    intraday = (px - op) / op if op else 0.0
+    rsi_val = _rsi(c[-min(20, len(c)):])
+    return {
+        'px': px, 'prev': prev, 'op': op, 'hi': hi, 'lo': lo,
+        'vwap': vwap, 'pullback': pullback, 'bounce': bounce,
+        'intraday': intraday, 'rsi': rsi_val, 'closes': c,
+    }
+
+
+def _hh_intraday_t(context, bar_idx):
+    """华虹分钟T: score>=2加满 / score<=-2全出"""
+    hh = _intraday_stats(BENCHMARK, 60)
+    jh = _intraday_stats(g.stock, 60)
+    if not hh or not jh:
+        return g.t_sleeve, 'T持有', '-'
+
+    score = 0
+    notes = []
+    px, prev, vwap = hh['px'], hh['prev'], hh['vwap']
+    op, intraday = hh['op'], hh['intraday']
+
+    if hh['pullback'] >= PULLBACK_BUY and px > prev and px >= vwap * 0.998:
+        score += 2
+        notes.append('华虹日内回落后回升')
+    if hh['bounce'] >= BOUNCE_BUY and px > op and px > prev:
+        score += 1
+        notes.append('华虹自低点反弹')
+    if hh['rsi'] <= RSI_OS and px > prev and px > vwap:
+        score += 2
+        notes.append('华虹分钟RSI超卖反弹')
+    if px <= hh['lo'] * 1.005 and px > prev:
+        score += 1
+        notes.append('华虹接近日内低点转强')
+
+    if hh['bounce'] >= SPIKE_SELL and px < prev and px < vwap:
+        score -= 2
+        notes.append('华虹日内拉升后转弱')
+    if hh['pullback'] >= DROP_SELL and px < prev and intraday < 0:
+        score -= 1
+        notes.append('华虹自高点回落')
+    if hh['rsi'] >= RSI_OB and px < prev:
+        score -= 1
+        notes.append('华虹分钟RSI超买')
+    if px > vwap * 1.012 and px < prev and intraday > 0.01:
+        score -= 1
+        notes.append('华虹偏离VWAP回落')
+
+    gap = jh['intraday'] - intraday
+    if gap >= REL_GAP:
+        score += 1
+        notes.append('晶合强于华虹')
+    if gap <= -REL_GAP and intraday > 0.01:
+        score -= 1
+        notes.append('华虹强于晶合')
+
+    if score >= 2:
+        tgt, act = T_MAX, 'T加满'
+    elif score <= -2:
+        tgt, act = 0.0, 'T全出'
+    else:
+        tgt, act = g.t_sleeve, 'T持有'
+
+    if bar_idx - g.last_t_bar >= MIN_TRADE_GAP or act != 'T持有':
+        if tgt != g.t_sleeve:
+            g.t_sleeve = tgt
+            g.last_t_bar = bar_idx
+
+    return g.t_sleeve, act, ';'.join(notes) if notes else '-'
+
+
+def handle_bar(context, bar_dict):
+    bar_idx = getattr(context, 'current_dt', None)
+    idx = bar_idx.minute if bar_idx else 0
+
+    core_tgt = _daily_core(context)
+    t_tgt, t_act, t_note = _hh_intraday_t(context, idx)
+
+    pos = context.portfolio.positions.get(g.stock)
+    hold = pos.amount if pos else 0
+    price = bar_dict[g.stock].close
+    total = context.portfolio.total_value
+    pos_pct = (pos.market_value / total) if (pos and total > 0) else 0.0
+
+    if core_tgt <= 0:
+        tgt = 0.0
+        action = '底仓清仓'
+        g.t_sleeve = T_MAX
+    else:
+        tgt = min(core_tgt + t_tgt, 1.0)
+        action = '底仓持有+{}'.format(t_act)
+
+    log.info(
+        '{} px={:.2f} 底={:.0%} T={:.0%} 总={:.0%} {} | 华虹T:{}'.format(
+            get_datetime(), price, core_tgt, t_tgt, tgt, action, t_note,
+        )
+    )
+
+    if abs(pos_pct - tgt) < REBAL_MIN and hold > 0:
+        return
+    if tgt == 0.0 and hold == 0:
+        return
+
+    order_target_percent(g.stock, tgt)
+    log.info('日内T调仓 -> {:.0%}'.format(tgt))
 '''

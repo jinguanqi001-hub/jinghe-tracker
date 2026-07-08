@@ -25,7 +25,7 @@
 
 ## Step 2：先回测（必做）
 
-在新单元格运行：
+**A. 日线底仓回测**（v9.3，T 为日线近似，仅供对照）
 
 ```python
 btest = research_strategy(
@@ -41,6 +41,29 @@ btest = research_strategy(
 # 看结果
 btest['analyser']['portfolio']   # 持仓曲线
 btest['analyser']['trades']      # 每笔买卖
+```
+
+**B. 日内T 分钟回测/仿真**（v10，华虹分钟基准 — **实盘推荐**）
+
+```python
+from supermind_jinghe import INTRADAY_SOURCE_CODE
+
+btest_min = research_strategy(
+    INTRADAY_SOURCE_CODE,
+    start_date='20250601',
+    end_date='20260703',
+    capital_base=200000,
+    frequency='MINUTE',
+    stock_market='STOCK',
+    benchmark='000688.SH',
+)
+```
+
+本地盘中日内T监控：
+
+```bash
+python3 intraday_t.py --watch 60
+# 或 ./watch.sh intraday 60
 ```
 
 **重点看：**
